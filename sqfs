@@ -1,0 +1,10 @@
+#!/bin/sh
+
+for i in ./target/release/sqfs ./target/debug/sqfs; do
+  if test -f "$i"; then
+    exec "$i" "$@"
+  fi
+done
+
+echo 'sqfs not built' >&2
+exit 1

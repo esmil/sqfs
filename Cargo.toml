@@ -1,0 +1,17 @@
+[package]
+name = "sqfs"
+version = "0.0.1"
+authors = ["Emil Renner Berthing <esmil@mailme.dk>"]
+
+[dependencies]
+time = "*"
+clap = "*"
+byteorder = "*"
+libc = "0.2"
+lzma-sys = "*"
+
+[lib]
+name = "squashfs"
+
+[[bin]]
+name = "sqfs"
