@@ -1,6 +1,8 @@
 #!/bin/sh
 
-for i in ./target/release/sqfs ./target/debug/sqfs; do
+here="$(dirname "$0")"
+
+for i in "$here/target/release/sqfs" "$here/target/debug/sqfs"; do
   if test -f "$i"; then
     exec "$i" "$@"
   fi

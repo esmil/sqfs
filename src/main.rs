@@ -1,8 +1,12 @@
 use std::io;
 use std::ffi::OsStr;
-use std::fs::File;
-use std::path::Path;
 use std::os::unix::ffi::OsStrExt;
+use std::fs::File;
+use std::fs::OpenOptions;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
+use std::path::PathBuf;
+
 
 extern crate time;
 use time::Timespec;
@@ -80,54 +84,75 @@ fn superblock(path: &OsStr, offset: u64) -> io::Result<()> {
     Ok(())
 }
 
-fn list_entry(name: &[u8], node: &squashfs::INode, ids: &[u32]) {
-    let typc = node.typechar();
-    let mode = node.mode();
-    let uid = ids[node.uid_idx()];
-    let gid = ids[node.gid_idx()];
-    let path = tostr(name);
-    match node.typ {
-        squashfs::INodeType::File { file_size, .. } => {
-            println!("{} {:4} {:4} {:4o} {} {}", typc, uid, gid, mode,
-                     path, file_size );
-        }
-        squashfs::INodeType::Symlink { ref tgt, .. } => {
-            println!("{} {:4} {:4} {:4o} {} -> {}", typc, uid, gid, mode,
-                     path, tostr(tgt));
-        }
-        squashfs::INodeType::CharDev { rdev, .. } |
-        squashfs::INodeType::BlockDev { rdev, .. } => {
-            let maj = rdev >> 8;
-            let min = rdev & 0xff;
-            println!("{} {:4} {:4} {:4o} {} {}:{}", typc, uid, gid, mode,
-                     path, maj, min);
-        }
-        squashfs::INodeType::Fifo { .. } |
-        squashfs::INodeType::Socket { .. } |
-        squashfs::INodeType::Dir { .. } => {
-            println!("{} {:4} {:4} {:4o} {}", typc, uid, gid, mode,
-                     path);
-        }
-    }
-}
-
 fn list(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
     let file = File::open(path)?;
     let sqfs = squashfs::SquashFS::new(Box::new(file), offset)?;
+    let recursive = m.is_present("recursive");
     let prefix = m.value_of_os("PATH").map(|p| p.as_bytes()).unwrap_or(b"");
     let ids = sqfs.ids()?;
+    let mut entries = Vec::new();
+    let mut path = Vec::new();
+    let mut stack = Vec::new();
 
-    let node = sqfs.lookup(prefix)?;
-    match node.typ {
-        squashfs::INodeType::Dir { .. } => {
-            let mut des = sqfs.direntries(&node)?;
-            while let Some(de) = des.snext()? {
-                let node = sqfs.node(&de)?;
-                list_entry(de.name(), &node, &ids);
+    if prefix.is_empty() {
+        path.push(b'/')
+    } else {
+        path.extend_from_slice(prefix);
+    }
+    stack.push(Some((Box::new([]) as Box<[u8]>, Box::new(sqfs.lookup(prefix)?))));
+
+    while let Some(e) = stack.pop() {
+        if let Some((name, node)) = e {
+            path.extend_from_slice(&name);
+            let typc = node.typechar();
+            let mode = node.mode();
+            let uid = ids[node.uid_idx()];
+            let gid = ids[node.gid_idx()];
+            match node.typ {
+                squashfs::INodeType::Dir { .. } => {
+                    println!("{} {:4} {:4} {:4o} {}", typc, uid, gid, mode,
+                             tostr(&path));
+                    if recursive || stack.is_empty() {
+                        for p in sqfs.readdir(&node)? {
+                            entries.push(p?)
+                        }
+                        stack.push(None);
+                        while let Some(e) = entries.pop() {
+                            stack.push(Some(e));
+                        }
+                        if let Some(&b'/') = path.last() {
+                        } else {
+                            path.push(b'/');
+                        }
+                        continue;
+                    }
+                }
+                squashfs::INodeType::File { file_size, .. } => {
+                    println!("{} {:4} {:4} {:4o} {} {}", typc, uid, gid, mode,
+                             tostr(&path), file_size );
+                }
+                squashfs::INodeType::Symlink { ref tgt, .. } => {
+                    println!("{} {:4} {:4} {:4o} {} -> {}", typc, uid, gid, mode,
+                             tostr(&path), tostr(tgt));
+                }
+                squashfs::INodeType::CharDev { rdev, .. } |
+                squashfs::INodeType::BlockDev { rdev, .. } => {
+                    let maj = rdev >> 8;
+                    let min = rdev & 0xff;
+                    println!("{} {:4} {:4} {:4o} {} {}:{}", typc, uid, gid, mode,
+                             tostr(&path), maj, min);
+                }
+                squashfs::INodeType::Fifo { .. } |
+                squashfs::INodeType::Socket { .. } => {
+                    println!("{} {:4} {:4} {:4o} {}", typc, uid, gid, mode,
+                             tostr(&path));
+                }
             }
+        } else {
+            path.pop();
         }
-        _ => {
-            list_entry(prefix, &node, &ids);
+        while !path.is_empty() && path[path.len() - 1] != b'/' {
+            path.pop();
         }
     }
 
@@ -145,15 +170,64 @@ fn contents(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
     Ok(())
 }
 
+fn extract(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
+    let file = File::open(path)?;
+    let sqfs = squashfs::SquashFS::new(Box::new(file), offset)?;
+    let prefix = m.value_of_os("PATH").map(|p| p.as_bytes()).unwrap_or(b"");
+    //let ids = sqfs.ids()?;
+    let mut entries = Vec::new();
+    let mut path = PathBuf::from(r"squashfs-root");
+    let mut stack = Vec::new();
+
+    stack.push(Some((Box::new([]) as Box<[u8]>, Box::new(sqfs.lookup(prefix)?))));
+
+    while let Some(e) = stack.pop() {
+        if let Some((name, node)) = e {
+            path.push(OsStr::from_bytes(&name));
+            println!("{}", path.display());
+            match node.typ {
+                squashfs::INodeType::Dir { .. } => {
+                    std::fs::create_dir(&path)?;
+                    for p in sqfs.readdir(&node)? {
+                        entries.push(p?)
+                    }
+                    stack.push(None);
+                    while let Some(e) = entries.pop() {
+                        stack.push(Some(e));
+                    }
+                    continue;
+                }
+                squashfs::INodeType::File { .. } => {
+                    let mut file = OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(u32::from(node.mode()))
+                        .open(&path)?;
+
+                    sqfs.write(&node, &mut file)?;
+                }
+                squashfs::INodeType::Symlink { ref tgt, .. } => {
+                    std::os::unix::fs::symlink(OsStr::from_bytes(tgt), &path)?;
+                }
+                _ => {
+                }
+            }
+        }
+        path.pop();
+    }
+
+    Ok(())
+}
+
 fn main() {
     let offset = Arg::with_name("offset")
         .short("o")
         .long("offset")
         .takes_value(true)
         .value_name("OFFSET")
-        .help("byte offset into INPUT");
+        .help("Byte offset into INPUT");
     let input = Arg::with_name("INPUT")
-        .help("squashfs file")
+        .help("SquashFS file")
         .required(true);
     let matches = App::new("sqfs")
         .version("0.0.1")
@@ -171,8 +245,12 @@ fn main() {
             .visible_alias("ls")
             .setting(AppSettings::ColoredHelp)
             .arg(&offset).arg(&input)
+            .arg(Arg::with_name("recursive")
+                 .short("r")
+                 .long("recursive")
+                 .help("Show recursive contents of all subdirectories"))
             .arg(Arg::with_name("PATH")
-                .help("list only PATH and files it")))
+                .help("List only PATH (and files below it)")))
         .subcommand(SubCommand::with_name("contents")
             .about("dump contents of a file to stdout")
             .visible_alias("cat")
@@ -181,6 +259,11 @@ fn main() {
             .arg(Arg::with_name("PATH")
                 .help("path to file")
                 .required(true)))
+        .subcommand(SubCommand::with_name("extract")
+            .about("extract all files from squashfs")
+            .visible_alias("x")
+            .setting(AppSettings::ColoredHelp)
+            .arg(&offset).arg(&input))
         .get_matches();
 
     match matches.subcommand() {
@@ -208,7 +291,14 @@ fn main() {
                 fail::<()>();
             }
         }
+        ("extract", Some(m)) => {
+            let (path, offset) = get_input(m).unwrap_or_else(fail);
 
+            if let Err(e) = extract(path, offset, m) {
+                eprintln!("Error reading '{}': {}", Path::new(path).display(), e);
+                fail::<()>();
+            }
+        }
         _ => {
             println!("What to do..");
             fail::<()>();

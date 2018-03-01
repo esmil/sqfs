@@ -295,22 +295,17 @@ impl INode {
     }
 }
 
-
-pub struct DirEntry {
+/*
+struct DirEntry {
     name: Box<[u8]>,
     ino: u32,
     block: u32,
     tmark: u16,
     offset: u16,
 }
+*/
 
-impl DirEntry {
-    pub fn name(&self) -> &[u8] {
-        &self.name
-    }
-}
-
-pub struct DirEntryStream<'a> {
+pub struct DirEntryIter<'a> {
     ms: MetaStream<'a>,
     bytes: i32,
     count: u32,
@@ -318,50 +313,53 @@ pub struct DirEntryStream<'a> {
     ino_base: u32,
 }
 
-impl<'a> DirEntryStream<'a> {
-    pub fn snext(&mut self) -> io::Result<Option<DirEntry>> {
+impl<'a> Iterator for DirEntryIter<'a> {
+    type Item = io::Result<(Box<[u8]>,Box<INode>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
         fn broken<T>() -> io::Result<T> {
             Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "broken directory entry",
             ))
         }
-        if self.bytes <= 0 {
-            if self.bytes < 0 {
+        fn readnext(s: &mut DirEntryIter) -> io::Result<(Box<[u8]>,Box<INode>)> {
+            if s.count == 0 {
+                s.count       = s.ms.u32()? + 1;
+                s.start_block = s.ms.u32()?;
+                s.ino_base    = s.ms.u32()?;
+                s.bytes -= 12;
+            }
+            let offset   = s.ms.u16()?;
+            let ino_add  = s.ms.i16()?;
+            let tmark    = s.ms.u16()?;
+            let size     = s.ms.u16()?;
+
+            let len = size as usize + 1;
+            if len > SQUASHFS_NAME_LEN {
                 return broken();
             }
-            return Ok(None);
+            let ino = i64::from(s.ino_base) + i64::from(ino_add);
+            if ino < 0 || ino > i64::from(std::u32::MAX) {
+                return broken();
+            }
+            let name = s.ms.boxed_bytes(len)?;
+            let addr = s.ms.sqfs.sb.inode_table_start as u64 + u64::from(s.start_block);
+            let node = Box::new(s.ms.sqfs.inode_at(addr, offset)?);
+            if tmark != node.tmark || ino as u32 != node.ino {
+                return broken();
+            }
+            s.bytes -= 8 + i32::from(size) + 1;
+            s.count -= 1;
+            Ok((name, node))
         }
-        if self.count == 0 {
-            self.count       = self.ms.u32()? + 1;
-            self.start_block = self.ms.u32()?;
-            self.ino_base    = self.ms.u32()?;
-            self.bytes -= 12;
+        if self.bytes <= 0 {
+            if self.bytes < 0 {
+                return Some(broken());
+            }
+            return None;
         }
-        let offset   = self.ms.u16()?;
-        let ino_add  = self.ms.i16()?;
-        let tmark    = self.ms.u16()?;
-        let size     = self.ms.u16()?;
-
-        let len = size as usize + 1;
-        if len > SQUASHFS_NAME_LEN {
-            return broken();
-        }
-        let ino = i64::from(self.ino_base) + i64::from(ino_add);
-        if ino < 0 || ino > i64::from(std::u32::MAX) {
-            return broken();
-        }
-
-        let name = self.ms.boxed_bytes(len)?;
-        self.bytes -= 8 + i32::from(size) + 1;
-        self.count -= 1;
-        Ok(Some(DirEntry {
-            name,
-            ino: ino as u32,
-            block: self.start_block,
-            tmark,
-            offset,
-        }))
+        Some(readnext(self))
     }
 }
 
@@ -753,10 +751,10 @@ impl SquashFS {
         })
     }
 
-    pub fn direntries(&self, node: &INode) -> io::Result<DirEntryStream> {
+    pub fn readdir(&self, node: &INode) -> io::Result<DirEntryIter> {
         if let INodeType::Dir { start_block, file_size, offset, ..} = node.typ {
             let addr = self.sb.directory_table_start as u64 + u64::from(start_block);
-            return Ok(DirEntryStream {
+            return Ok(DirEntryIter {
                 ms: self.metastream(addr, offset)?,
                 bytes: i32::from(file_size) - 3,
                 count: 0,
@@ -837,18 +835,6 @@ impl SquashFS {
             return broken();
         }
         not_found()
-    }
-
-    pub fn node(&self, de: &DirEntry) -> io::Result<INode> {
-        let addr = self.sb.inode_table_start as u64 + u64::from(de.block);
-        let node = self.inode_at(addr, de.offset)?;
-        if de.tmark != node.tmark || de.ino != node.ino {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "broken directory entry",
-            ));
-        }
-        Ok(node)
     }
 
     fn root(&self) -> io::Result<INode> {
