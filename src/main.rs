@@ -220,6 +220,24 @@ fn extract(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
     Ok(())
 }
 
+fn plan(_m: &ArgMatches) -> io::Result<()> {
+    let mut fs = squashfs::virtfs::FS::new();
+
+    fs.mkdir(b"/boot")?;
+    fs.mkdir(b"/usr")?;
+    fs.mkdir(b"/usr/lala")?;
+    fs.mkdir(b"/usr/bin")?;
+    fs.symlink(b"usr/bin", b"/bin")?;
+    fs.symlink(b"bash", b"/usr/bin/sh")?;
+    fs.unlink(b"usr/lala")?;
+    fs.unlink(b"usr")?;
+    fs.mkdir(b"/usr")?;
+    fs.mkdir(b"/usr/lib")?;
+    print!("{}", fs);
+    println!("validate = {}", fs.validate());
+    Ok(())
+}
+
 fn main() {
     let offset = Arg::with_name("offset")
         .short("o")
@@ -265,6 +283,9 @@ fn main() {
             .visible_alias("x")
             .setting(AppSettings::ColoredHelp)
             .arg(&offset).arg(&input))
+        .subcommand(SubCommand::with_name("plan")
+            .about("create squashfs from plan")
+            .setting(AppSettings::ColoredHelp))
         .get_matches();
 
     match matches.subcommand() {
@@ -297,6 +318,12 @@ fn main() {
 
             if let Err(e) = extract(path, offset, m) {
                 eprintln!("Error reading '{}': {}", Path::new(path).display(), e);
+                fail::<()>();
+            }
+        }
+        ("plan", Some(m)) => {
+            if let Err(e) = plan(m) {
+                eprintln!("Error': {}", e);
                 fail::<()>();
             }
         }

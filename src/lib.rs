@@ -15,6 +15,8 @@ extern crate libc;
 extern crate lzma_sys;
 mod xz;
 
+pub mod virtfs;
+
 pub trait ReadAt {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize>;
 }
