@@ -105,12 +105,14 @@ fn list(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
         if let Some((name, node)) = e {
             path.extend_from_slice(&name);
             let typc = node.typechar();
+            let ino = node.ino();
+            let nlink = node.nlink();
             let mode = node.mode();
             let uid = ids[node.uid_idx()];
             let gid = ids[node.gid_idx()];
             match node.typ {
                 squashfs::INodeType::Dir { .. } => {
-                    println!("{} {:4} {:4} {:4o} {}", typc, uid, gid, mode,
+                    println!("{} {:3} {:2} {:4} {:4} {:4o} {}", typc, ino, nlink, uid, gid, mode,
                              tostr(&path));
                     if recursive || stack.is_empty() {
                         for p in sqfs.readdir(&node)? {
@@ -128,23 +130,23 @@ fn list(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
                     }
                 }
                 squashfs::INodeType::File { file_size, .. } => {
-                    println!("{} {:4} {:4} {:4o} {} {}", typc, uid, gid, mode,
+                    println!("{} {:3} {:2} {:4} {:4} {:4o} {} {}", typc, ino, nlink, uid, gid, mode,
                              tostr(&path), file_size );
                 }
-                squashfs::INodeType::Symlink { ref tgt, .. } => {
-                    println!("{} {:4} {:4} {:4o} {} -> {}", typc, uid, gid, mode,
+                squashfs::INodeType::Symlink { ref tgt } => {
+                    println!("{} {:3} {:2} {:4} {:4} {:4o} {} -> {}", typc, ino, nlink, uid, gid, mode,
                              tostr(&path), tostr(tgt));
                 }
-                squashfs::INodeType::CharDev { rdev, .. } |
-                squashfs::INodeType::BlockDev { rdev, .. } => {
+                squashfs::INodeType::CharDev { rdev } |
+                squashfs::INodeType::BlockDev { rdev } => {
                     let maj = rdev >> 8;
                     let min = rdev & 0xff;
-                    println!("{} {:4} {:4} {:4o} {} {}:{}", typc, uid, gid, mode,
+                    println!("{} {:3} {:2} {:4} {:4} {:4o} {} {}:{}", typc, ino, nlink, uid, gid, mode,
                              tostr(&path), maj, min);
                 }
-                squashfs::INodeType::Fifo { .. } |
-                squashfs::INodeType::Socket { .. } => {
-                    println!("{} {:4} {:4} {:4o} {}", typc, uid, gid, mode,
+                squashfs::INodeType::Fifo |
+                squashfs::INodeType::Socket => {
+                    println!("{} {:3} {:2} {:4} {:4} {:4o} {}", typc, ino, nlink, uid, gid, mode,
                              tostr(&path));
                 }
             }

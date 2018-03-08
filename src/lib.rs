@@ -34,6 +34,7 @@ const SQUASHFS_SUPERBLOCK_SIZE: usize = 96;
 const SQUASHFS_METADATA_SIZE:   usize = 8192;
 const SQUASHFS_MAGIC:             u32 = 0x7371_7368;
 const SQUASHFS_INVALID_FRAG:      u32 = 0xffff_ffff;
+const SQUASHFS_INVALID_XATTR:     u32 = 0xffff_ffff;
 
 // max length of direntry name
 const SQUASHFS_NAME_LEN:        usize = 256;
@@ -220,11 +221,10 @@ impl SuperBlock {
 #[derive(Debug)]
 pub enum INodeType {
     Dir {
-        start_block : u32,
-        nlink       : u32,
-        file_size   : u16,
-        offset      : u16,
-        parent      : u32,
+        start_block: u32,
+        file_size: u32,
+        offset: u16,
+        parent: u32,
     },
     File {
         start_block: u64,
@@ -233,11 +233,11 @@ pub enum INodeType {
         file_size: u64,
         block_list: Box<[u32]>,
     },
-    Symlink  { nlink: u32, tgt: Box<[u8]>, },
-    BlockDev { nlink: u32, rdev: u32, },
-    CharDev  { nlink: u32, rdev: u32, },
-    Fifo     { nlink: u32, },
-    Socket   { nlink: u32, },
+    Symlink  { tgt: Box<[u8]>, },
+    BlockDev { rdev: u32, },
+    CharDev  { rdev: u32, },
+    Fifo,
+    Socket,
 }
 
 #[derive(Debug)]
@@ -248,6 +248,8 @@ pub struct INode {
     gid:   u16,
     mtime: i32,
     ino:   u32,
+    nlink: u32,
+    xattr: u32,
     pub typ: INodeType,
 }
 
@@ -265,8 +267,8 @@ impl fmt::Display for INode {
             }
             INodeType::BlockDev { .. } => write!(f, "BlockDev({})", self.ino),
             INodeType::CharDev { .. }  => write!(f, "CharDev({})", self.ino),
-            INodeType::Fifo { .. }     => write!(f, "Fifo({})", self.ino),
-            INodeType::Socket { .. }   => write!(f, "Socket({})", self.ino),
+            INodeType::Fifo            => write!(f, "Fifo({})", self.ino),
+            INodeType::Socket          => write!(f, "Socket({})", self.ino),
         }
     }
 }
@@ -279,11 +281,17 @@ impl INode {
             INodeType::Symlink { .. }  => 'l',
             INodeType::BlockDev { .. } => 'b',
             INodeType::CharDev { .. }  => 'c',
-            INodeType::Fifo { .. }     => 'p',
-            INodeType::Socket { .. }   => 's',
+            INodeType::Fifo            => 'p',
+            INodeType::Socket          => 's',
         }
     }
 
+    pub fn ino(&self) -> u32 {
+        self.ino
+    }
+    pub fn nlink(&self) -> u32 {
+        self.nlink
+    }
     pub fn mode(&self) -> u16 {
         self.mode
     }
@@ -307,7 +315,7 @@ struct DirEntry {
 
 pub struct DirEntryIter<'a> {
     ms: MetaStream<'a>,
-    bytes: i32,
+    bytes: u32,
     count: u32,
     start_block: u32,
     ino_base: u32,
@@ -346,17 +354,23 @@ impl<'a> Iterator for DirEntryIter<'a> {
             let name = s.ms.boxed_bytes(len)?;
             let addr = s.ms.sqfs.sb.inode_table_start as u64 + u64::from(s.start_block);
             let node = Box::new(s.ms.sqfs.inode_at(addr, offset)?);
-            if tmark != node.tmark || ino as u32 != node.ino {
+            let mut ntmark = node.tmark;
+            if ntmark > 7 {
+                ntmark -= 7;
+            }
+            if tmark != ntmark || ino as u32 != node.ino {
                 return broken();
             }
-            s.bytes -= 8 + i32::from(size) + 1;
+            s.bytes -= 8 + u32::from(size) + 1;
             s.count -= 1;
             Ok((name, node))
         }
-        if self.bytes <= 0 {
+        if self.bytes == 0 {
+            /*
             if self.bytes < 0 {
                 return Some(broken());
             }
+            */
             return None;
         }
         Some(readnext(self))
@@ -443,6 +457,16 @@ impl<'a> MetaStream<'a> {
         }
         self.pos = end;
         Ok(LE::read_i32(&self.data[idx..]))
+    }
+
+    fn i64(&mut self) -> io::Result<i64> {
+        let idx = self.pos;
+        let end = idx + 8;
+        if end > self.data.len() {
+            return self.read_i64::<LE>();
+        }
+        self.pos = end;
+        Ok(LE::read_i64(&self.data[idx..]))
     }
 
     fn boxed_bytes(&mut self, len: usize) -> io::Result<Box<[u8]>> {
@@ -659,22 +683,26 @@ impl SquashFS {
         }
         let mtime = ms.i32()?;
         let ino   = ms.u32()?;
-        let typ   = match tmark {
+        let nlink;
+        let xattr;
+        let typ = match tmark {
             SQUASHFS_DIR_TYPE => {
+                xattr = SQUASHFS_INVALID_XATTR;
                 let start_block = ms.u32()?;
-                let nlink       = ms.u32()?;
+                nlink           = ms.u32()?;
                 let file_size   = ms.u16()?;
                 let offset      = ms.u16()?;
                 let parent      = ms.u32()?;
                 INodeType::Dir {
                     start_block,
-                    nlink,
-                    file_size,
+                    file_size: u32::from(file_size),
                     offset,
                     parent,
                 }
             }
             SQUASHFS_FILE_TYPE => {
+                nlink = 1;
+                xattr = SQUASHFS_INVALID_XATTR;
                 let start_block = ms.u32()?;
                 let fragment    = ms.u32()?;
                 let offset      = ms.u32()?;
@@ -700,39 +728,131 @@ impl SquashFS {
                 }
             }
             SQUASHFS_SYMLINK_TYPE => {
-                let nlink = ms.u32()?;
-                let size  = ms.u32()? as usize;
-                let tgt   = ms.boxed_bytes(size)?;
-                INodeType::Symlink {
-                    nlink,
-                    tgt,
-                }
+                xattr = SQUASHFS_INVALID_XATTR;
+                nlink    = ms.u32()?;
+                let size = ms.u32()? as usize;
+                let tgt  = ms.boxed_bytes(size)?;
+                INodeType::Symlink { tgt }
             }
             SQUASHFS_BLKDEV_TYPE => {
-                let nlink = ms.u32()?;
-                let rdev  = ms.u32()?;
-                INodeType::BlockDev { nlink, rdev }
+                xattr = SQUASHFS_INVALID_XATTR;
+                nlink    = ms.u32()?;
+                let rdev = ms.u32()?;
+                INodeType::BlockDev { rdev }
             }
             SQUASHFS_CHRDEV_TYPE => {
-                let nlink = ms.u32()?;
-                let rdev  = ms.u32()?;
-                INodeType::CharDev { nlink, rdev }
+                xattr = SQUASHFS_INVALID_XATTR;
+                nlink    = ms.u32()?;
+                let rdev = ms.u32()?;
+                INodeType::CharDev { rdev }
             }
             SQUASHFS_FIFO_TYPE => {
-                let nlink = ms.u32()?;
-                INodeType::Fifo { nlink }
+                xattr = SQUASHFS_INVALID_XATTR;
+                nlink = ms.u32()?;
+                INodeType::Fifo
             }
             SQUASHFS_SOCKET_TYPE => {
-                let nlink = ms.u32()?;
-                INodeType::Socket { nlink }
+                xattr = SQUASHFS_INVALID_XATTR;
+                nlink = ms.u32()?;
+                INodeType::Socket
             }
-            SQUASHFS_LDIR_TYPE     => panic!("unimplemented inode type large dir"),
-            SQUASHFS_LREG_TYPE     => panic!("unimplemented inode type large file"),
-            SQUASHFS_LSYMLINK_TYPE => panic!("unimplemented inode type large symlink"),
-            SQUASHFS_LBLKDEV_TYPE  => panic!("unimplemented inode type large blkdev"),
-            SQUASHFS_LCHRDEV_TYPE  => panic!("unimplemented inode type large chrdev"),
-            SQUASHFS_LFIFO_TYPE    => panic!("unimplemented inode type large fifo"),
-            SQUASHFS_LSOCKET_TYPE  => panic!("unimplemented inode type large socket"),
+            SQUASHFS_LDIR_TYPE => {
+                panic!("unimplemented inode type large dir");
+                /*
+                nlink           = ms.u32()?;
+                let file_size   = ms.u32()?;
+                let start_block = ms.u32()?;
+                let parent      = ms.u32()?;
+                let i_count     = ms.u16()?;
+                let offset      = ms.u16()?;
+                xattr           = ms.u32()?;
+                for i in 0..(i_count as usize) {
+                    /* read
+                    let index       = ms.u32()?;
+                    let start_block = ms.u32()?;
+                    let size        = ms.u32()?;
+                    unsigned char		name[0];
+                    */
+                }
+                INodeType::Dir {
+                    start_block,
+                    file_size,
+                    offset,
+                    parent,
+                }
+                */
+            }
+            SQUASHFS_LREG_TYPE => {
+                let start_block = ms.i64()?;
+                let file_size   = ms.i64()?;
+                let sparse      = ms.i64()?;
+                nlink           = ms.u32()?;
+                let fragment    = ms.u32()?;
+                let offset      = ms.u32()?;
+                xattr           = ms.u32()?;
+
+                if start_block < 0 {
+                    panic!("start_block < 0, what does that mean?");
+                }
+                if file_size < 0 {
+                    panic!("file_size < 0, what does that mean?");
+                }
+                if sparse != 0 {
+                    panic!("sparse != 0, what does that mean?");
+                }
+
+                let blocks = if fragment == SQUASHFS_INVALID_FRAG {
+                    (file_size as u64 + u64::from(self.sb.block_size) - 1) >> self.sb.block_log
+                } else {
+                    file_size as u64 >> self.sb.block_log
+                };
+                if blocks > std::usize::MAX as u64 {
+                    panic!("file contains {} blocks, too many for us to handle", blocks);
+                }
+                let blocks = blocks as usize;
+
+                let mut block_list = Vec::with_capacity(blocks);
+                for _ in 0..blocks {
+                    block_list.push(ms.u32()?);
+                }
+
+                INodeType::File {
+                    start_block: start_block as u64,
+                    fragment,
+                    offset,
+                    file_size: file_size as u64,
+                    block_list: block_list.into_boxed_slice(),
+                }
+            }
+            SQUASHFS_LSYMLINK_TYPE => {
+                nlink    = ms.u32()?;
+                let size = ms.u32()? as usize;
+                let tgt  = ms.boxed_bytes(size)?;
+                xattr    = ms.u32()?;
+                INodeType::Symlink { tgt }
+            }
+            SQUASHFS_LBLKDEV_TYPE => {
+                nlink    = ms.u32()?;
+                let rdev = ms.u32()?;
+                xattr    = ms.u32()?;
+                INodeType::BlockDev { rdev }
+            }
+            SQUASHFS_LCHRDEV_TYPE => {
+                nlink    = ms.u32()?;
+                let rdev = ms.u32()?;
+                xattr    = ms.u32()?;
+                INodeType::CharDev { rdev }
+            }
+            SQUASHFS_LFIFO_TYPE => {
+                nlink = ms.u32()?;
+                xattr = ms.u32()?;
+                INodeType::Fifo
+            }
+            SQUASHFS_LSOCKET_TYPE => {
+                nlink = ms.u32()?;
+                xattr = ms.u32()?;
+                INodeType::Socket
+            }
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -740,6 +860,9 @@ impl SquashFS {
                 ));
             }
         };
+        if xattr != SQUASHFS_INVALID_XATTR {
+            panic!("xattrs not supported");
+        }
         Ok(INode {
             tmark,
             mode,
@@ -747,6 +870,8 @@ impl SquashFS {
             gid,
             mtime,
             ino,
+            nlink,
+            xattr,
             typ,
         })
     }
@@ -756,7 +881,7 @@ impl SquashFS {
             let addr = self.sb.directory_table_start as u64 + u64::from(start_block);
             return Ok(DirEntryIter {
                 ms: self.metastream(addr, offset)?,
-                bytes: i32::from(file_size) - 3,
+                bytes: file_size - 3,
                 count: 0,
                 start_block: 0,
                 ino_base: 0,
@@ -794,7 +919,7 @@ impl SquashFS {
         let addr = self.sb.directory_table_start as u64 + u64::from(start_block);
         let mut ms = self.metastream(addr, offset)?;
         let mut buf: [u8; SQUASHFS_NAME_LEN] = unsafe { mem::uninitialized() };
-        let mut bytes = i32::from(file_size) - 3;
+        let mut bytes = i64::from(file_size) - 3;
         while bytes > 0 {
             let mut count   = ms.u32()?;
             let start_block = ms.u32()?;
@@ -824,7 +949,7 @@ impl SquashFS {
                     }
                     return Ok(node);
                 }
-                bytes -= 8 + i32::from(size) + 1;
+                bytes -= 8 + i64::from(size) + 1;
                 if count == 0 {
                     break;
                 }
@@ -972,7 +1097,7 @@ impl SquashFS {
     }
 
     pub fn write(&self, node: &INode, out: &mut io::Write) -> io::Result<()> {
-        if let INodeType::File { mut start_block, fragment, offset, mut file_size, ref block_list } = node.typ {
+        if let INodeType::File { mut start_block, fragment, offset, mut file_size, ref block_list, .. } = node.typ {
             eprintln!("write: start_block = {}, fragment = {}, offset = {}, file_size = {}, #blocks = {}",
                      start_block, fragment, offset, file_size, block_list.len());
             eprintln!("write: block_list = {:?}", block_list);
