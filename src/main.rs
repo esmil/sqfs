@@ -15,6 +15,10 @@ use clap::{App, AppSettings, Arg, ArgMatches, SubCommand};
 
 extern crate squashfs;
 
+extern crate yaml_rust;
+mod yaml;
+mod plan;
+
 fn tostr(buf: &[u8]) -> &str {
     std::str::from_utf8(buf).unwrap_or("<non-utf8>")
 }
@@ -110,9 +114,9 @@ fn list(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
             let uid = ids[node.uid_idx()];
             let gid = ids[node.gid_idx()];
             match node.typ {
-                squashfs::INodeType::Dir { .. } => {
-                    println!("{} {:3} {:2} {:4} {:4} {:4o} {}", typc, ino, nlink, uid, gid, mode,
-                             tostr(&path));
+                squashfs::INodeType::Dir { parent, .. } => {
+                    println!("{} {:3} {:2} {:4} {:4} {:4o} {} {}", typc, ino, nlink, uid, gid, mode,
+                             tostr(&path), parent);
                     if recursive || stack.is_empty() {
                         for p in sqfs.readdir(&node)? {
                             entries.push(p?)
@@ -177,7 +181,7 @@ fn extract(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
     let prefix = m.value_of_os("PATH").map(|p| p.as_bytes()).unwrap_or(b"");
     //let ids = sqfs.ids()?;
     let mut entries = Vec::new();
-    let mut path = PathBuf::from(r"squashfs-root");
+    let mut path = PathBuf::from("squashfs-root");
     let mut stack = Vec::new();
 
     stack.push(Some((Box::new([]) as Box<[u8]>, Box::new(sqfs.lookup(prefix)?))));
@@ -220,21 +224,21 @@ fn extract(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
     Ok(())
 }
 
-fn plan(_m: &ArgMatches) -> io::Result<()> {
-    let mut fs = squashfs::virtfs::FS::new();
+fn plan(path: &OsStr, _m: &ArgMatches) -> io::Result<()> {
+    let res = plan::parsefile(path)?;
+    if res.len() < 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "no YAML document found",
+        ));
+    }
 
-    fs.mkdir(b"/boot")?;
-    fs.mkdir(b"/usr")?;
-    fs.mkdir(b"/usr/lala")?;
-    fs.mkdir(b"/usr/bin")?;
-    fs.symlink(b"usr/bin", b"/bin")?;
-    fs.symlink(b"bash", b"/usr/bin/sh")?;
-    fs.unlink(b"usr/lala")?;
-    fs.unlink(b"usr")?;
-    fs.mkdir(b"/usr")?;
-    fs.mkdir(b"/usr/lib")?;
+    let mut fs = squashfs::virtfs::FS::new();
+    plan::add(&mut fs, &res[0])?;
+
     print!("{}", fs);
     println!("validate = {}", fs.validate());
+
     Ok(())
 }
 
@@ -285,7 +289,11 @@ fn main() {
             .arg(&offset).arg(&input))
         .subcommand(SubCommand::with_name("plan")
             .about("create squashfs from plan")
-            .setting(AppSettings::ColoredHelp))
+            .visible_alias("p")
+            .setting(AppSettings::ColoredHelp)
+            .arg(Arg::with_name("PLAN")
+                .help("plan file")
+                .required(true)))
         .get_matches();
 
     match matches.subcommand() {
@@ -322,8 +330,10 @@ fn main() {
             }
         }
         ("plan", Some(m)) => {
-            if let Err(e) = plan(m) {
-                eprintln!("Error': {}", e);
+            let path = m.value_of_os("PLAN").unwrap();
+
+            if let Err(e) = plan(path, m) {
+                eprintln!("Error enacting '{}': {}", Path::new(path).display(), e);
                 fail::<()>();
             }
         }

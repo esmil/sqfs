@@ -9,6 +9,7 @@ clap = "*"
 byteorder = "*"
 libc = "*"
 lzma-sys = "*"
+yaml-rust = "*"
 
 [lib]
 name = "squashfs"
