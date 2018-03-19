@@ -652,7 +652,10 @@ impl SquashFS {
         let uid   = ms.u16()?;
         let gid   = ms.u16()?;
         if uid >= self.sb.no_ids || gid >= self.sb.no_ids {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid id"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid id"
+            ));
         }
         let mtime = ms.i32()?;
         let ino   = ms.u32()?;
@@ -833,9 +836,6 @@ impl SquashFS {
                 ));
             }
         };
-        if xattr != SQUASHFS_INVALID_XATTR {
-            panic!("xattrs not supported");
-        }
         Ok(INode {
             tmark,
             mode,
@@ -1008,9 +1008,9 @@ impl SquashFS {
     fn fragment_table(&self) -> io::Result<Box<[u64]>> {
         fn corrupt<T>() -> io::Result<T> {
             Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "corrupt fragment table",
-                    ))
+                io::ErrorKind::InvalidInput,
+                "corrupt fragment table",
+            ))
         }
         let fragments = self.sb.fragments;
         if fragments == 0 {
@@ -1061,9 +1061,9 @@ impl SquashFS {
 
             if self.handle.read_at(&mut out[..rlen], self.offset + addr)? != rlen {
                 return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "short read"
-                        ));
+                    io::ErrorKind::InvalidInput,
+                    "short read"
+                ));
             }
             eprintln!("write: read block {}, {} bytes, uncompressed", addr, rlen);
         } else {
@@ -1071,9 +1071,9 @@ impl SquashFS {
 
             if self.handle.read_at(&mut raw[..rlen], self.offset + addr)? != rlen {
                 return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "short read"
-                        ));
+                    io::ErrorKind::InvalidInput,
+                    "short read"
+                ));
             }
 
             len = xz::decompress(&raw[..rlen], out)?;
