@@ -13,6 +13,13 @@ fn not_found<T>() -> io::Result<T> {
     ))
 }
 
+fn file_exists<T>() -> io::Result<T> {
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "file exists",
+    ))
+}
+
 fn basename(path: &[u8]) -> io::Result<(&[u8], &[u8])> {
     let mut end = path.len();
     while end > 0 && path[end - 1] == b'/' {
@@ -135,10 +142,7 @@ impl FS {
         let parent = self._lookup(prefix)?;
         if let Node::Dir(ref mut dir) = self.nodes[parent] {
             if dir.entries.contains_key(name) {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "file exists",
-                ));
+                return file_exists();
             }
         } else {
             return not_found();
@@ -214,10 +218,7 @@ impl FS {
         let parent = self._lookup(prefix)?;
         if let Node::Dir(ref mut dir) = self.nodes[parent] {
             if dir.entries.contains_key(name) {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "file exists",
-                ));
+                return file_exists();
             }
         } else {
             return not_found();
@@ -281,10 +282,7 @@ impl FS {
         let parent = self._lookup(prefix)?;
         if let Node::Dir(ref mut dir) = self.nodes[parent] {
             if dir.entries.contains_key(name) {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "file exists",
-                ));
+                return file_exists();
             }
             dir.entries.insert(name.into(), n.idx);
         } else {
