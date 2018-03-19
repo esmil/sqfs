@@ -420,56 +420,27 @@ impl<'a> io::Read for MetaStream<'a> {
     }
 }
 
+macro_rules! define_simpletype (
+    ($n:ident, $r:ident, $t:ty, $l:expr) => (
+        pub fn $n(&mut self) -> io::Result<$t> {
+            let idx = self.pos;
+            let end = idx + $l;
+            if end > self.data.len() {
+                return self.$r::<LE>();
+            }
+            self.pos = end;
+            Ok(LE::$r(&self.data[idx..]))
+        }
+    );
+);
+
 impl<'a> MetaStream<'a> {
-    fn u16(&mut self) -> io::Result<u16> {
-        let idx = self.pos;
-        let end = idx + 2;
-        if end > self.data.len() {
-            return self.read_u16::<LE>();
-        }
-        self.pos = end;
-        Ok(LE::read_u16(&self.data[idx..]))
-    }
-
-    fn i16(&mut self) -> io::Result<i16> {
-        let idx = self.pos;
-        let end = idx + 2;
-        if end > self.data.len() {
-            return self.read_i16::<LE>();
-        }
-        self.pos = end;
-        Ok(LE::read_i16(&self.data[idx..]))
-    }
-
-    fn u32(&mut self) -> io::Result<u32> {
-        let idx = self.pos;
-        let end = idx + 4;
-        if end >= self.data.len() {
-            return self.read_u32::<LE>();
-        }
-        self.pos = end;
-        Ok(LE::read_u32(&self.data[idx..]))
-    }
-
-    fn i32(&mut self) -> io::Result<i32> {
-        let idx = self.pos;
-        let end = idx + 4;
-        if end > self.data.len() {
-            return self.read_i32::<LE>();
-        }
-        self.pos = end;
-        Ok(LE::read_i32(&self.data[idx..]))
-    }
-
-    fn i64(&mut self) -> io::Result<i64> {
-        let idx = self.pos;
-        let end = idx + 8;
-        if end > self.data.len() {
-            return self.read_i64::<LE>();
-        }
-        self.pos = end;
-        Ok(LE::read_i64(&self.data[idx..]))
-    }
+    define_simpletype!(u16, read_u16, u16, 2);
+    define_simpletype!(i16, read_i16, i16, 2);
+    define_simpletype!(u32, read_u32, u32, 4);
+    define_simpletype!(i32, read_i32, i32, 4);
+    //define_simpletype!(u64, read_u64, u64, 8);
+    define_simpletype!(i64, read_i64, i64, 8);
 
     fn boxed_bytes(&mut self, len: usize) -> io::Result<Box<[u8]>> {
         let mut v = Vec::with_capacity(len);
