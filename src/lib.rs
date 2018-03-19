@@ -981,12 +981,17 @@ impl SquashFS {
     }
 
     pub fn lookup(&self, path: &[u8]) -> io::Result<INode> {
-        let mut stack = Vec::new();
-        stack.push(self.root()?);
+        let mut cache = HashMap::new();
+        let mut ino;
+        {
+            let root = self.root()?;
+            ino = root.ino;
+            cache.insert(ino, root);
+        }
         let mut end = 0;
         while end < path.len() {
-            //eprintln!("end = {}, node = {}", end, stack.last().unwrap());
-            if let INodeType::Dir { .. } = stack.last().unwrap().typ {
+            //eprintln!("end = {}, node = {}", end, &node);
+            if let INodeType::Dir { .. } = (&cache[&ino]).typ {
             } else {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -1006,17 +1011,25 @@ impl SquashFS {
                 continue;
             }
             if part == b".." {
-                stack.pop();
-                if stack.is_empty() {
-                    return not_found();
+                if let INodeType::Dir { parent, .. } = (&cache[&ino]).typ {
+                    if let Some(n) = cache.get(&parent) {
+                        ino = n.ino;
+                    } else {
+                        return not_found();
+                    }
+                } else {
+                    panic!();
                 }
                 continue;
             }
 
-            let child = self.child(stack.last().unwrap(), part)?;
-            stack.push(child);
+            {
+                let child = self.child(&cache[&ino], part)?;
+                ino = child.ino;
+                cache.insert(ino, child);
+            }
         }
-        Ok(stack.pop().unwrap())
+        Ok(cache.remove(&ino).unwrap())
     }
 
     fn fragment_table(&self) -> io::Result<Box<[u64]>> {

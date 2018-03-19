@@ -7,7 +7,6 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 
-
 extern crate time;
 use time::Timespec;
 
