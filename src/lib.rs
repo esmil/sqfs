@@ -315,15 +315,15 @@ struct DirEntry {
 }
 */
 
-pub struct DirEntryIter<'a> {
-    ms: MetaStream<'a>,
+pub struct DirEntryIter<'d, 's : 'd> {
+    ms: MetaStream<'d, 's>,
     bytes: u32,
     count: u32,
     start_block: u32,
     ino_base: u32,
 }
 
-impl<'a> Iterator for DirEntryIter<'a> {
+impl<'d, 's> Iterator for DirEntryIter<'d, 's> {
     type Item = io::Result<(Box<[u8]>,Box<INode>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -354,8 +354,8 @@ impl<'a> Iterator for DirEntryIter<'a> {
                 return broken();
             }
             let name = s.ms.boxed_bytes(len)?;
-            let addr = s.ms.sqfs.sb.inode_table_start as u64 + u64::from(s.start_block);
-            let node = Box::new(s.ms.sqfs.inode_at(addr, offset)?);
+            let addr = s.ms.dec.sqfs.sb.inode_table_start as u64 + u64::from(s.start_block);
+            let node = Box::new(s.ms.dec.inode_at(addr, offset)?);
             let mut ntmark = node.tmark;
             if ntmark > 7 {
                 ntmark -= 7;
@@ -390,14 +390,14 @@ struct FragCache {
     map: HashMap<u32, Rc<[u8]>>,
 }
 
-struct MetaStream<'a> {
-    sqfs: &'a SquashFS,
+struct MetaStream<'d, 's : 'd> {
+    dec: &'d mut Decompressor<'s>,
     next: u64,
     pos: usize,
     data: Rc<[u8]>,
 }
 
-impl<'a> io::Read for MetaStream<'a> {
+impl<'d, 's> io::Read for MetaStream<'d, 's> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut idx = 0;
         loop {
@@ -412,7 +412,7 @@ impl<'a> io::Read for MetaStream<'a> {
                 return Ok(idx);
             }
 
-            let mb = self.sqfs.metablock(self.next)?;
+            let mb = self.dec.metablock(self.next)?;
             self.next = mb.next;
             self.data = mb.data;
             self.pos = 0;
@@ -434,7 +434,7 @@ macro_rules! define_simpletype (
     );
 );
 
-impl<'a> MetaStream<'a> {
+impl<'d, 's> MetaStream<'d, 's> {
     define_simpletype!(u16, read_u16, u16, 2);
     define_simpletype!(i16, read_i16, i16, 2);
     define_simpletype!(u32, read_u32, u32, 4);
@@ -459,7 +459,30 @@ pub struct SquashFS {
 }
 
 impl SquashFS {
-    fn metablock_read(&self, addr: u64) -> io::Result<MetaEntry> {
+    pub fn new(handle: Box<ReadAt>, offset: u64) -> io::Result<SquashFS> {
+        let sb = SuperBlock::read(&*handle, offset)?;
+        Ok(SquashFS {
+            handle,
+            offset,
+            sb,
+            metacache: RwLock::new(HashMap::new()),
+            fragcache: RwLock::new(None),
+        })
+    }
+
+    pub fn decompressor(&self) -> io::Result<Decompressor> {
+        Ok(Decompressor {
+            sqfs: self,
+        })
+    }
+}
+
+pub struct Decompressor<'s> {
+    sqfs: &'s SquashFS,
+}
+
+impl<'s> Decompressor<'s> {
+    fn metablock_read(&mut self, addr: u64) -> io::Result<MetaEntry> {
         fn short_read<T>() -> io::Result<T> {
             Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -468,8 +491,8 @@ impl SquashFS {
         }
 
         let mut buf: [u8; SQUASHFS_METADATA_SIZE] = unsafe { mem::uninitialized() };
-        let mut offset = self.offset + addr;
-        if self.handle.read_at(&mut buf[..2], offset)? != 2 {
+        let mut offset = self.sqfs.offset + addr;
+        if self.sqfs.handle.read_at(&mut buf[..2], offset)? != 2 {
             return short_read();
         }
         offset += 2;
@@ -493,12 +516,12 @@ impl SquashFS {
         let data: Rc<[u8]> = if !compressed {
             let mut v = Vec::with_capacity(blocklen);
             unsafe { v.set_len(blocklen) };
-            if self.handle.read_at(&mut v, offset)? != blocklen {
+            if self.sqfs.handle.read_at(&mut v, offset)? != blocklen {
                 return short_read();
             }
             v
         } else {
-            if self.handle.read_at(&mut buf[..blocklen], offset)? != blocklen {
+            if self.sqfs.handle.read_at(&mut buf[..blocklen], offset)? != blocklen {
                 return short_read();
             }
             let mut v = Vec::with_capacity(SQUASHFS_METADATA_SIZE);
@@ -519,29 +542,29 @@ impl SquashFS {
         Ok(MetaEntry { next, data })
     }
 
-    fn metablock(&self, addr: u64) -> io::Result<MetaEntry> {
+    fn metablock(&mut self, addr: u64) -> io::Result<MetaEntry> {
         {
-            let cache = self.metacache.read().unwrap();
+            let cache = self.sqfs.metacache.read().unwrap();
             if let Some(mb) = cache.get(&addr) {
                 return Ok(mb.clone());
             }
         }
         let mb = self.metablock_read(addr)?;
-        self.metacache.write().unwrap().insert(addr, mb.clone());
+        self.sqfs.metacache.write().unwrap().insert(addr, mb.clone());
         Ok(mb)
     }
 
-    fn metastream(&self, addr: u64, offset: u16) -> io::Result<MetaStream> {
+    fn metastream<'d>(&'d mut self, addr: u64, offset: u16) -> io::Result<MetaStream<'d, 's>> {
         let mb = self.metablock(addr)?;
         Ok(MetaStream {
-            sqfs: self,
+            dec: self,
             next: mb.next,
             pos: offset as usize,
             data: mb.data,
         })
     }
 
-    pub fn ids(&self) -> io::Result<Box<[u32]>> {
+    pub fn ids(&mut self) -> io::Result<Box<[u32]>> {
         fn corrupt<T>() -> io::Result<T> {
             Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -549,7 +572,7 @@ impl SquashFS {
                     ))
         }
         eprintln!("reading id index");
-        let no_ids = self.sb.no_ids as usize;
+        let no_ids = self.sqfs.sb.no_ids as usize;
         let indexes = (4 * no_ids + SQUASHFS_METADATA_SIZE - 1) / SQUASHFS_METADATA_SIZE;
         let ilen = 8 * indexes;
 
@@ -558,7 +581,7 @@ impl SquashFS {
         let mut iread = 0;
         while iread < ilen {
             let chunk = std::cmp::min(ilen - iread, buf.len());
-            if self.handle.read_at(&mut buf[..chunk], self.offset + self.sb.id_table_start as u64 + iread as u64)? != chunk {
+            if self.sqfs.handle.read_at(&mut buf[..chunk], self.sqfs.offset + self.sqfs.sb.id_table_start as u64 + iread as u64)? != chunk {
                 return corrupt();
             }
 
@@ -583,10 +606,10 @@ impl SquashFS {
         Ok(ids.into_boxed_slice())
     }
 
-    fn fragment(&self, fragment: u32) -> io::Result<Rc<[u8]>> {
+    fn fragment(&mut self, fragment: u32) -> io::Result<Rc<[u8]>> {
         let idx = 16 * fragment as usize;
         let mut addr = {
-            if let Some(ref cache) = *self.fragcache.read().unwrap().deref() {
+            if let Some(ref cache) = *self.sqfs.fragcache.read().unwrap().deref() {
                 if let Some(data) = cache.map.get(&fragment) {
                     return Ok(data.clone());
                 }
@@ -599,14 +622,14 @@ impl SquashFS {
             let table = self.fragment_table()?;
             eprintln!("fragment: table = {:?}", &table);
             addr = table[idx / SQUASHFS_METADATA_SIZE];
-            let mut lock = self.fragcache.write().unwrap();
+            let mut lock = self.sqfs.fragcache.write().unwrap();
             let p = lock.deref_mut();
             if p.is_none() {
                 *p = Some(FragCache { table, map: HashMap::new() })
             }
         }
 
-        let block_size = 1usize << self.sb.block_log;
+        let block_size = 1usize << self.sqfs.sb.block_log;
         let mut raw = Vec::with_capacity(block_size);
         unsafe { raw.set_len(block_size) };
         let mut buf = Vec::with_capacity(block_size);
@@ -627,31 +650,23 @@ impl SquashFS {
 
         let ret: Rc<[u8]> = buf.into();
         {
-            if let Some(ref mut cache) = *self.fragcache.write().unwrap().deref_mut() {
+            if let Some(ref mut cache) = *self.sqfs.fragcache.write().unwrap().deref_mut() {
                 cache.map.insert(fragment, ret.clone());
             }
         }
         Ok(ret)
     }
 
-    pub fn new(handle: Box<ReadAt>, offset: u64) -> io::Result<SquashFS> {
-        let sb = SuperBlock::read(&*handle, offset)?;
-        Ok(SquashFS {
-            handle,
-            offset,
-            sb,
-            metacache: RwLock::new(HashMap::new()),
-            fragcache: RwLock::new(None),
-        })
-    }
-
-    fn inode_at(&self, addr: u64, offset: u16) -> io::Result<INode> {
+    fn inode_at(&mut self, addr: u64, offset: u16) -> io::Result<INode> {
+        let no_ids     = self.sqfs.sb.no_ids;
+        let block_size = self.sqfs.sb.block_size;
+        let block_log  = self.sqfs.sb.block_log;
         let mut ms = self.metastream(addr, offset)?;
         let tmark = ms.u16()?;
         let mode  = ms.u16()?;
         let uid   = ms.u16()?;
         let gid   = ms.u16()?;
-        if uid >= self.sb.no_ids || gid >= self.sb.no_ids {
+        if uid >= no_ids || gid >= no_ids {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid id"
@@ -685,9 +700,9 @@ impl SquashFS {
                 let file_size   = ms.u32()?;
 
                 let blocks = if fragment == SQUASHFS_INVALID_FRAG {
-                    (file_size + self.sb.block_size - 1) >> self.sb.block_log
+                    (file_size + block_size - 1) >> block_log
                 } else {
-                    file_size >> self.sb.block_log
+                    file_size >> block_log
                 } as usize;
 
                 let mut block_list = Vec::with_capacity(blocks);
@@ -778,9 +793,9 @@ impl SquashFS {
                 }
 
                 let blocks = if fragment == SQUASHFS_INVALID_FRAG {
-                    (file_size as u64 + u64::from(self.sb.block_size) - 1) >> self.sb.block_log
+                    (file_size as u64 + u64::from(block_size) - 1) >> block_log
                 } else {
-                    file_size as u64 >> self.sb.block_log
+                    file_size as u64 >> block_log
                 };
                 if blocks > std::usize::MAX as u64 {
                     panic!("file contains {} blocks, too many for us to handle", blocks);
@@ -849,9 +864,9 @@ impl SquashFS {
         })
     }
 
-    pub fn readdir(&self, node: &INode) -> io::Result<DirEntryIter> {
+    pub fn readdir<'d>(&'d mut self, node: &INode) -> io::Result<DirEntryIter<'d, 's>> {
         if let INodeType::Dir { start_block, file_size, offset, ..} = node.typ {
-            let addr = self.sb.directory_table_start as u64 + u64::from(start_block);
+            let addr = self.sqfs.sb.directory_table_start as u64 + u64::from(start_block);
             return Ok(DirEntryIter {
                 ms: self.metastream(addr, offset)?,
                 bytes: file_size - 3,
@@ -866,7 +881,14 @@ impl SquashFS {
         ))
     }
 
-    pub fn child(&self, node: &INode, name: &[u8]) -> io::Result<INode> {
+    pub fn child(&mut self, node: &INode, name: &[u8]) -> io::Result<INode> {
+        if self.sqfs.sb.inode_table_start < 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "no inode table",
+            ));
+        }
+        let inode_table_start = self.sqfs.sb.inode_table_start as u64;
         fn broken<T>() -> io::Result<T> {
             Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -889,7 +911,7 @@ impl SquashFS {
             ));
         };
 
-        let addr = self.sb.directory_table_start as u64 + u64::from(start_block);
+        let addr = self.sqfs.sb.directory_table_start as u64 + u64::from(start_block);
         let mut ms = self.metastream(addr, offset)?;
         let mut buf: [u8; SQUASHFS_NAME_LEN] = unsafe { mem::uninitialized() };
         let mut bytes = i64::from(file_size) - 3;
@@ -915,8 +937,8 @@ impl SquashFS {
                 }
                 ms.read_exact(&mut buf[..len])?;
                 if name == &buf[..len] {
-                    let addr = self.sb.inode_table_start as u64 + u64::from(start_block);
-                    let node = self.inode_at(addr, offset)?;
+                    let addr = inode_table_start + u64::from(start_block);
+                    let node = ms.dec.inode_at(addr, offset)?;
                     if tmark != node.tmark || ino as u32 != node.ino {
                         return broken();
                     }
@@ -935,25 +957,25 @@ impl SquashFS {
         not_found()
     }
 
-    fn root(&self) -> io::Result<INode> {
-        if self.sb.inode_table_start < 0 {
+    fn root(&mut self) -> io::Result<INode> {
+        if self.sqfs.sb.inode_table_start < 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "no inode table",
             ));
         }
-        if self.sb.root_inode < 0 {
+        if self.sqfs.sb.root_inode < 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "no root inode",
             ));
         }
-        let root = self.sb.root_inode as u64;
-        let addr = self.sb.inode_table_start as u64 + (root >> 16);
+        let root = self.sqfs.sb.root_inode as u64;
+        let addr = self.sqfs.sb.inode_table_start as u64 + (root >> 16);
         self.inode_at(addr, root as u16)
     }
 
-    pub fn lookup(&self, path: &[u8]) -> io::Result<INode> {
+    pub fn lookup(&mut self, path: &[u8]) -> io::Result<INode> {
         let mut cache = HashMap::new();
         let mut ino;
         {
@@ -1005,14 +1027,14 @@ impl SquashFS {
         Ok(cache.remove(&ino).unwrap())
     }
 
-    fn fragment_table(&self) -> io::Result<Box<[u64]>> {
+    fn fragment_table(&mut self) -> io::Result<Box<[u64]>> {
         fn corrupt<T>() -> io::Result<T> {
             Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "corrupt fragment table",
             ))
         }
-        let fragments = self.sb.fragments;
+        let fragments = self.sqfs.sb.fragments;
         if fragments == 0 {
             return Ok(Box::new([]));
         }
@@ -1025,7 +1047,7 @@ impl SquashFS {
         let mut iread = 0;
         while iread < ilen {
             let chunk = std::cmp::min(ilen - iread, buf.len());
-            if self.handle.read_at(&mut buf[..chunk], self.offset + self.sb.fragment_table_start as u64 + iread as u64)? != chunk {
+            if self.sqfs.handle.read_at(&mut buf[..chunk], self.sqfs.offset + self.sqfs.sb.fragment_table_start as u64 + iread as u64)? != chunk {
                 return corrupt();
             }
 
@@ -1044,7 +1066,7 @@ impl SquashFS {
         Ok(table.into())
     }
 
-    fn readblock(&self, raw: &mut [u8], out: &mut [u8], addr: u64, v: u32) -> io::Result<(usize, usize)> {
+    fn readblock(&mut self, raw: &mut [u8], out: &mut [u8], addr: u64, v: u32) -> io::Result<(usize, usize)> {
         let rlen: usize;
         let len: usize;
         if v == 0 { // sparse block
@@ -1059,7 +1081,7 @@ impl SquashFS {
             rlen = (v & 0xff_ffff) as usize;
             len = rlen;
 
-            if self.handle.read_at(&mut out[..rlen], self.offset + addr)? != rlen {
+            if self.sqfs.handle.read_at(&mut out[..rlen], self.sqfs.offset + addr)? != rlen {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "short read"
@@ -1069,7 +1091,7 @@ impl SquashFS {
         } else {
             rlen = v as usize;
 
-            if self.handle.read_at(&mut raw[..rlen], self.offset + addr)? != rlen {
+            if self.sqfs.handle.read_at(&mut raw[..rlen], self.sqfs.offset + addr)? != rlen {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "short read"
@@ -1082,12 +1104,12 @@ impl SquashFS {
         Ok((rlen, len))
     }
 
-    pub fn write(&self, node: &INode, out: &mut io::Write) -> io::Result<()> {
+    pub fn write(&mut self, node: &INode, out: &mut io::Write) -> io::Result<()> {
         if let INodeType::File { mut start_block, fragment, offset, mut file_size, ref block_list, .. } = node.typ {
             eprintln!("write: start_block = {}, fragment = {}, offset = {}, file_size = {}, #blocks = {}",
                      start_block, fragment, offset, file_size, block_list.len());
             eprintln!("write: block_list = {:?}", block_list);
-            let block_size = 1usize << self.sb.block_log;
+            let block_size = 1usize << self.sqfs.sb.block_log;
             let mut raw = Vec::with_capacity(block_size);
             unsafe { raw.set_len(block_size) };
             let mut buf = Vec::with_capacity(block_size);
