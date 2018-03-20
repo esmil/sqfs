@@ -30,6 +30,10 @@ mod lz4;
 
 pub mod virtfs;
 
+macro_rules! debug {
+    ($($arg:tt)*) => (if cfg!(debug_assertions) { eprintln!($($arg)*) })
+}
+
 pub trait ReadAt {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize>;
 }
@@ -553,7 +557,7 @@ impl<'s> Decompressor<'s> {
             v
         }.into();
 
-        eprintln!("reading metablock {}, {} -> {} bytes, compressed = {}", addr, blocklen, data.len(), compressed);
+        debug!("reading metablock {}, {} -> {} bytes, compressed = {}", addr, blocklen, data.len(), compressed);
         let next = if data.len() < SQUASHFS_METADATA_SIZE {
             0
         } else {
@@ -592,7 +596,7 @@ impl<'s> Decompressor<'s> {
                     "corrupt id table",
                     ))
         }
-        eprintln!("reading id index");
+        debug!("reading id index");
         let no_ids = self.sqfs.sb.no_ids as usize;
         let indexes = (4 * no_ids + SQUASHFS_METADATA_SIZE - 1) / SQUASHFS_METADATA_SIZE;
         let ilen = 8 * indexes;
@@ -641,7 +645,7 @@ impl<'s> Decompressor<'s> {
         };
         if addr == 0 {
             let table = self.fragment_table()?;
-            eprintln!("fragment: table = {:?}", &table);
+            debug!("fragment: table = {:?}", &table);
             addr = table[idx / SQUASHFS_METADATA_SIZE];
             let mut lock = self.sqfs.fragcache.write().unwrap();
             let p = lock.deref_mut();
@@ -1010,7 +1014,7 @@ impl<'s> Decompressor<'s> {
         }
         let mut end = 0;
         while end < path.len() {
-            //eprintln!("end = {}, node = {}", end, &node);
+            //debug!("end = {}, node = {}", end, &node);
             if let INodeType::Dir { .. } = (&cache[&ino]).typ {
             } else {
                 return Err(io::Error::new(
@@ -1101,7 +1105,7 @@ impl<'s> Decompressor<'s> {
             for e in out.iter_mut() {
                 *e = 0;
             }
-            eprintln!("write: read block {}, {} bytes, sparse", addr, rlen);
+            debug!("write: read block {}, {} bytes, sparse", addr, rlen);
         } else if v & 0x100_0000 != 0 { // uncompressed
             rlen = (v & 0xff_ffff) as usize;
             len = rlen;
@@ -1112,7 +1116,7 @@ impl<'s> Decompressor<'s> {
                     "short read"
                 ));
             }
-            eprintln!("write: read block {}, {} bytes, uncompressed", addr, rlen);
+            debug!("write: read block {}, {} bytes, uncompressed", addr, rlen);
         } else {
             rlen = v as usize;
 
@@ -1124,16 +1128,16 @@ impl<'s> Decompressor<'s> {
             }
 
             len = self.dec.decompress(&mut raw[..rlen], out)?;
-            eprintln!("write: read block {}, {} bytes, compressed {} bytes", addr, rlen, len);
+            debug!("write: read block {}, {} bytes, compressed {} bytes", addr, rlen, len);
         }
         Ok((rlen, len))
     }
 
     pub fn write(&mut self, node: &INode, out: &mut io::Write) -> io::Result<()> {
         if let INodeType::File { mut start_block, fragment, offset, mut file_size, ref block_list, .. } = node.typ {
-            eprintln!("write: start_block = {}, fragment = {}, offset = {}, file_size = {}, #blocks = {}",
+            debug!("write: start_block = {}, fragment = {}, offset = {}, file_size = {}, #blocks = {}",
                      start_block, fragment, offset, file_size, block_list.len());
-            eprintln!("write: block_list = {:?}", block_list);
+            debug!("write: block_list = {:?}", block_list);
             let block_size = 1usize << self.sqfs.sb.block_log;
             let mut raw = Vec::with_capacity(block_size);
             unsafe { raw.set_len(block_size) };
