@@ -960,7 +960,11 @@ impl<'s> Decompressor<'s> {
                 if name == &buf[..len] {
                     let addr = inode_table_start + u64::from(start_block);
                     let node = ms.dec.inode_at(addr, offset)?;
-                    if tmark != node.tmark || ino as u32 != node.ino {
+                    let mut ntmark = node.tmark;
+                    if ntmark > 7 {
+                        ntmark -= 7;
+                    }
+                    if tmark != ntmark || ino as u32 != node.ino {
                         return broken();
                     }
                     return Ok(node);
