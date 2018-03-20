@@ -11,9 +11,22 @@ use byteorder::ByteOrder;
 use byteorder::LittleEndian as LE;
 use byteorder::ReadBytesExt;
 
-extern crate libc;
+pub trait Decompress {
+    fn decompress(&mut self, ins: &mut [u8], outs: &mut [u8]) -> io::Result<usize>;
+}
+
+extern crate libz_sys;
+mod zlib;
+
 extern crate lzma_sys;
+mod lzma;
 mod xz;
+
+extern crate rust_lzo;
+mod lzo;
+
+extern crate lz4_sys;
+mod lz4;
 
 pub mod virtfs;
 
@@ -473,12 +486,20 @@ impl SquashFS {
     pub fn decompressor(&self) -> io::Result<Decompressor> {
         Ok(Decompressor {
             sqfs: self,
+            dec: match self.sb.compression {
+                Compression::ZLIB => zlib::decompress()?,
+                Compression::LZMA => lzma::decompress()?,
+                Compression::LZO  => lzo::decompress()?,
+                Compression::XZ   => xz::decompress()?,
+                Compression::LZ4  => lz4::decompress()?,
+            },
         })
     }
 }
 
 pub struct Decompressor<'s> {
     sqfs: &'s SquashFS,
+    dec: Box<Decompress>,
 }
 
 impl<'s> Decompressor<'s> {
@@ -526,7 +547,7 @@ impl<'s> Decompressor<'s> {
             }
             let mut v = Vec::with_capacity(SQUASHFS_METADATA_SIZE);
             unsafe { v.set_len(SQUASHFS_METADATA_SIZE) };
-            let len = xz::decompress(&buf[..blocklen], &mut v)?;
+            let len = self.dec.decompress(&mut buf[..blocklen], &mut v)?;
             unsafe { v.set_len(len) };
             v.shrink_to_fit();
             v
@@ -1098,7 +1119,7 @@ impl<'s> Decompressor<'s> {
                 ));
             }
 
-            len = xz::decompress(&raw[..rlen], out)?;
+            len = self.dec.decompress(&mut raw[..rlen], out)?;
             eprintln!("write: read block {}, {} bytes, compressed {} bytes", addr, rlen, len);
         }
         Ok((rlen, len))

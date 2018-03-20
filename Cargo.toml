@@ -7,8 +7,10 @@ authors = ["Emil Renner Berthing <esmil@mailme.dk>"]
 time = "*"
 clap = "*"
 byteorder = "*"
-libc = "*"
+libz-sys = "*"
 lzma-sys = "*"
+rust-lzo = "*"
+lz4-sys = "*"
 yaml-rust = "*"
 
 [lib]
