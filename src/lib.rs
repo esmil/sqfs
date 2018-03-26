@@ -488,6 +488,10 @@ impl SquashFS {
     }
 
     pub fn decompressor(&self) -> io::Result<Decompressor> {
+        let buflen = std::cmp::max(self.sb.block_size as usize, SQUASHFS_METADATA_SIZE);
+        let mut buf = Vec::with_capacity(buflen);
+        unsafe { buf.set_len(buflen) };
+
         Ok(Decompressor {
             sqfs: self,
             dec: match self.sb.compression {
@@ -497,6 +501,7 @@ impl SquashFS {
                 Compression::XZ   => xz::decompress()?,
                 Compression::LZ4  => lz4::decompress()?,
             },
+            buf,
         })
     }
 }
@@ -504,6 +509,7 @@ impl SquashFS {
 pub struct Decompressor<'s> {
     sqfs: &'s SquashFS,
     dec: Box<Decompress>,
+    buf: Vec<u8>,
 }
 
 impl<'s> Decompressor<'s> {
@@ -515,15 +521,14 @@ impl<'s> Decompressor<'s> {
             ))
         }
 
-        let mut buf: [u8; SQUASHFS_METADATA_SIZE] = unsafe { mem::uninitialized() };
         let mut offset = self.sqfs.offset + addr;
-        if self.sqfs.handle.read_at(&mut buf[..2], offset)? != 2 {
+        if self.sqfs.handle.read_at(&mut self.buf[..2], offset)? != 2 {
             return short_read();
         }
         offset += 2;
 
         let (blocklen, compressed) = {
-            let v = LE::read_u16(&buf);
+            let v = LE::read_u16(&self.buf);
 
             // block is uncompressed if highest bit is set
             if v & 0x8000 == 0 {
@@ -546,12 +551,12 @@ impl<'s> Decompressor<'s> {
             }
             v
         } else {
-            if self.sqfs.handle.read_at(&mut buf[..blocklen], offset)? != blocklen {
+            if self.sqfs.handle.read_at(&mut self.buf[..blocklen], offset)? != blocklen {
                 return short_read();
             }
             let mut v = Vec::with_capacity(SQUASHFS_METADATA_SIZE);
             unsafe { v.set_len(SQUASHFS_METADATA_SIZE) };
-            let len = self.dec.decompress(&mut buf[..blocklen], &mut v)?;
+            let len = self.dec.decompress(&mut self.buf[..blocklen], &mut v)?;
             unsafe { v.set_len(len) };
             v.shrink_to_fit();
             v
@@ -601,18 +606,17 @@ impl<'s> Decompressor<'s> {
         let indexes = (4 * no_ids + SQUASHFS_METADATA_SIZE - 1) / SQUASHFS_METADATA_SIZE;
         let ilen = 8 * indexes;
 
-        let mut buf: [u8; SQUASHFS_METADATA_SIZE] = unsafe { mem::uninitialized() };
         let mut ids = Vec::with_capacity(no_ids);
         let mut iread = 0;
         while iread < ilen {
-            let chunk = std::cmp::min(ilen - iread, buf.len());
-            if self.sqfs.handle.read_at(&mut buf[..chunk], self.sqfs.offset + self.sqfs.sb.id_table_start as u64 + iread as u64)? != chunk {
+            let chunk = std::cmp::min(ilen - iread, SQUASHFS_METADATA_SIZE);
+            if self.sqfs.handle.read_at(&mut self.buf[..chunk], self.sqfs.offset + self.sqfs.sb.id_table_start as u64 + iread as u64)? != chunk {
                 return corrupt();
             }
 
             let mut pos = 0;
             while pos < chunk {
-                let addr = LE::read_i64(&buf[pos..]);
+                let addr = LE::read_i64(&self.buf[pos..]);
                 if addr < 0 {
                     return corrupt();
                 }
@@ -655,8 +659,6 @@ impl<'s> Decompressor<'s> {
         }
 
         let block_size = 1usize << self.sqfs.sb.block_log;
-        let mut raw = Vec::with_capacity(block_size);
-        unsafe { raw.set_len(block_size) };
         let mut buf = Vec::with_capacity(block_size);
         unsafe { buf.set_len(block_size) };
 
@@ -669,7 +671,7 @@ impl<'s> Decompressor<'s> {
                     "broken fragment table"
             ));
         }
-        let (_rlen, len) = self.readblock(&mut raw, &mut buf, start_block as u64, LE::read_u32(&mb.data[(pos+8)..]))?;
+        let (_rlen, len) = self.readblock(&mut buf, start_block as u64, LE::read_u32(&mb.data[(pos+8)..]))?;
         unsafe { buf.set_len(len) };
         buf.shrink_to_fit();
 
@@ -1071,18 +1073,17 @@ impl<'s> Decompressor<'s> {
         let indexes = (16 * fragments as usize + SQUASHFS_METADATA_SIZE - 1) / SQUASHFS_METADATA_SIZE;
         let ilen = 8 * indexes;
 
-        let mut buf: [u8; SQUASHFS_METADATA_SIZE] = unsafe { mem::uninitialized() };
         let mut table = Vec::with_capacity(indexes);
         let mut iread = 0;
         while iread < ilen {
-            let chunk = std::cmp::min(ilen - iread, buf.len());
-            if self.sqfs.handle.read_at(&mut buf[..chunk], self.sqfs.offset + self.sqfs.sb.fragment_table_start as u64 + iread as u64)? != chunk {
+            let chunk = std::cmp::min(ilen - iread, SQUASHFS_METADATA_SIZE);
+            if self.sqfs.handle.read_at(&mut self.buf[..chunk], self.sqfs.offset + self.sqfs.sb.fragment_table_start as u64 + iread as u64)? != chunk {
                 return corrupt();
             }
 
             let mut pos = 0;
             while pos < chunk {
-                let addr = LE::read_i64(&buf[pos..]);
+                let addr = LE::read_i64(&self.buf[pos..]);
                 if addr < 0 {
                     return corrupt();
                 }
@@ -1095,7 +1096,7 @@ impl<'s> Decompressor<'s> {
         Ok(table.into())
     }
 
-    fn readblock(&mut self, raw: &mut [u8], out: &mut [u8], addr: u64, v: u32) -> io::Result<(usize, usize)> {
+    fn readblock(&mut self, out: &mut [u8], addr: u64, v: u32) -> io::Result<(usize, usize)> {
         let rlen: usize;
         let len: usize;
         if v == 0 { // sparse block
@@ -1120,14 +1121,14 @@ impl<'s> Decompressor<'s> {
         } else {
             rlen = v as usize;
 
-            if self.sqfs.handle.read_at(&mut raw[..rlen], self.sqfs.offset + addr)? != rlen {
+            if self.sqfs.handle.read_at(&mut self.buf[..rlen], self.sqfs.offset + addr)? != rlen {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "short read"
                 ));
             }
 
-            len = self.dec.decompress(&mut raw[..rlen], out)?;
+            len = self.dec.decompress(&mut self.buf[..rlen], out)?;
             debug!("write: read block {}, {} bytes, compressed {} bytes", addr, rlen, len);
         }
         Ok((rlen, len))
@@ -1139,8 +1140,6 @@ impl<'s> Decompressor<'s> {
                      start_block, fragment, offset, file_size, block_list.len());
             debug!("write: block_list = {:?}", block_list);
             let block_size = 1usize << self.sqfs.sb.block_log;
-            let mut raw = Vec::with_capacity(block_size);
-            unsafe { raw.set_len(block_size) };
             let mut buf = Vec::with_capacity(block_size);
             unsafe { buf.set_len(block_size) };
             for v in block_list.iter() {
@@ -1149,7 +1148,7 @@ impl<'s> Decompressor<'s> {
                 } else {
                     block_size
                 };
-                let (rlen, len) = self.readblock(&mut raw, &mut buf[..len], start_block, *v)?;
+                let (rlen, len) = self.readblock(&mut buf[..len], start_block, *v)?;
                 start_block += rlen as u64;
                 file_size -= len as u64;
                 out.write_all(&buf[..len])?;
