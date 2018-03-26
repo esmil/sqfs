@@ -487,8 +487,24 @@ impl SquashFS {
         })
     }
 
+    fn ids(&self) -> usize {
+        self.sb.no_ids as usize
+    }
+
+    fn blocksize(&self) -> usize {
+        self.sb.block_size as usize
+    }
+
+    fn blocklog(&self) -> usize {
+        self.sb.block_log as usize
+    }
+
+    fn fragments(&self) -> usize {
+        self.sb.fragments as usize
+    }
+
     pub fn decompressor(&self) -> io::Result<Decompressor> {
-        let buflen = std::cmp::max(self.sb.block_size as usize, SQUASHFS_METADATA_SIZE);
+        let buflen = std::cmp::max(self.blocksize(), SQUASHFS_METADATA_SIZE);
         let mut buf = Vec::with_capacity(buflen);
         unsafe { buf.set_len(buflen) };
 
@@ -602,11 +618,11 @@ impl<'s> Decompressor<'s> {
                     ))
         }
         debug!("reading id index");
-        let no_ids = self.sqfs.sb.no_ids as usize;
-        let indexes = (4 * no_ids + SQUASHFS_METADATA_SIZE - 1) / SQUASHFS_METADATA_SIZE;
+        let ids = self.sqfs.ids();
+        let indexes = (4 * ids + SQUASHFS_METADATA_SIZE - 1) / SQUASHFS_METADATA_SIZE;
         let ilen = 8 * indexes;
 
-        let mut ids = Vec::with_capacity(no_ids);
+        let mut ret = Vec::with_capacity(ids);
         let mut iread = 0;
         while iread < ilen {
             let chunk = std::cmp::min(ilen - iread, SQUASHFS_METADATA_SIZE);
@@ -624,7 +640,7 @@ impl<'s> Decompressor<'s> {
                 let mb = self.metablock_read(addr as u64)?;
                 let mut i = 0;
                 while i < mb.data.len() {
-                    ids.push(LE::read_u32(&mb.data[i..]));
+                    ret.push(LE::read_u32(&mb.data[i..]));
                     i += 4;
                 }
                 pos += 8;
@@ -632,7 +648,7 @@ impl<'s> Decompressor<'s> {
             iread += chunk;
         }
 
-        Ok(ids.into_boxed_slice())
+        Ok(ret.into_boxed_slice())
     }
 
     fn fragment(&mut self, fragment: u32) -> io::Result<Rc<[u8]>> {
@@ -658,9 +674,9 @@ impl<'s> Decompressor<'s> {
             }
         }
 
-        let block_size = 1usize << self.sqfs.sb.block_log;
-        let mut buf = Vec::with_capacity(block_size);
-        unsafe { buf.set_len(block_size) };
+        let blocksize = self.sqfs.blocksize();
+        let mut buf = Vec::with_capacity(blocksize);
+        unsafe { buf.set_len(blocksize) };
 
         let mb = self.metablock(addr)?;
         let pos = idx % SQUASHFS_METADATA_SIZE;
@@ -685,15 +701,15 @@ impl<'s> Decompressor<'s> {
     }
 
     fn inode_at(&mut self, addr: u64, offset: u16) -> io::Result<INode> {
-        let no_ids     = self.sqfs.sb.no_ids;
-        let block_size = self.sqfs.sb.block_size;
-        let block_log  = self.sqfs.sb.block_log;
+        let ids       = self.sqfs.ids();
+        let blocksize = self.sqfs.blocksize();
+        let blocklog  = self.sqfs.blocklog();
         let mut ms = self.metastream(addr, offset)?;
         let tmark = ms.u16()?;
         let mode  = ms.u16()?;
         let uid   = ms.u16()?;
         let gid   = ms.u16()?;
-        if uid >= no_ids || gid >= no_ids {
+        if uid as usize >= ids || gid as usize >= ids {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid id"
@@ -727,10 +743,10 @@ impl<'s> Decompressor<'s> {
                 let file_size   = ms.u32()?;
 
                 let blocks = if fragment == SQUASHFS_INVALID_FRAG {
-                    (file_size + block_size - 1) >> block_log
+                    (file_size as usize + blocksize - 1) >> blocklog
                 } else {
-                    file_size >> block_log
-                } as usize;
+                    file_size as usize >> blocklog
+                };
 
                 let mut block_list = Vec::with_capacity(blocks);
                 for _ in 0..blocks {
@@ -820,9 +836,9 @@ impl<'s> Decompressor<'s> {
                 }
 
                 let blocks = if fragment == SQUASHFS_INVALID_FRAG {
-                    (file_size as u64 + u64::from(block_size) - 1) >> block_log
+                    (file_size as u64 + blocksize as u64 - 1) >> blocklog
                 } else {
-                    file_size as u64 >> block_log
+                    file_size as u64 >> blocklog
                 };
                 if blocks > std::usize::MAX as u64 {
                     panic!("file contains {} blocks, too many for us to handle", blocks);
@@ -1065,12 +1081,12 @@ impl<'s> Decompressor<'s> {
                 "corrupt fragment table",
             ))
         }
-        let fragments = self.sqfs.sb.fragments;
+        let fragments = self.sqfs.fragments();
         if fragments == 0 {
             return Ok(Box::new([]));
         }
 
-        let indexes = (16 * fragments as usize + SQUASHFS_METADATA_SIZE - 1) / SQUASHFS_METADATA_SIZE;
+        let indexes = (16 * fragments + SQUASHFS_METADATA_SIZE - 1) / SQUASHFS_METADATA_SIZE;
         let ilen = 8 * indexes;
 
         let mut table = Vec::with_capacity(indexes);
@@ -1139,21 +1155,21 @@ impl<'s> Decompressor<'s> {
             debug!("write: start_block = {}, fragment = {}, offset = {}, file_size = {}, #blocks = {}",
                      start_block, fragment, offset, file_size, block_list.len());
             debug!("write: block_list = {:?}", block_list);
-            let block_size = 1usize << self.sqfs.sb.block_log;
-            let mut buf = Vec::with_capacity(block_size);
-            unsafe { buf.set_len(block_size) };
+            let blocksize = self.sqfs.blocksize();
+            let mut buf = Vec::with_capacity(blocksize);
+            unsafe { buf.set_len(blocksize) };
             for v in block_list.iter() {
-                let len = if file_size < block_size as u64 {
+                let len = if file_size < blocksize as u64 {
                     file_size as usize
                 } else {
-                    block_size
+                    blocksize
                 };
                 let (rlen, len) = self.readblock(&mut buf[..len], start_block, *v)?;
                 start_block += rlen as u64;
                 file_size -= len as u64;
                 out.write_all(&buf[..len])?;
             }
-            if fragment != SQUASHFS_INVALID_FRAG && file_size < block_size as u64 {
+            if fragment != SQUASHFS_INVALID_FRAG && file_size < blocksize as u64 {
                 let data = self.fragment(fragment)?;
                 out.write_all(&data[(offset as usize)..(offset as usize + file_size as usize)])?;
             } else if file_size > 0 {
