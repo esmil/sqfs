@@ -1,15 +1,52 @@
-use std::{io, mem};
+use std::{io, mem, fmt};
+use byteorder::ByteOrder;
+use byteorder::LittleEndian as LE;
 use lzma_sys;
 
 use super::Decompress;
 
 const MEMLIMIT: u64 = 32 * 1024 * 1024;
 
-struct XZDec(lzma_sys::lzma_stream);
-
-pub fn decompress() -> io::Result<Box<Decompress>> {
-    Ok(Box::new(XZDec(unsafe { mem::zeroed() })))
+#[derive(PartialEq)]
+pub struct Options {
+    dictionary_size: i32,
+    flags: i32,
 }
+
+impl fmt::Display for Options {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "xz dictionary={} flags=0x{:x}",
+               self.dictionary_size,
+               self.flags)
+    }
+}
+
+impl Options {
+    pub fn new(blocksize: usize) -> Self {
+        Self {
+            dictionary_size: blocksize as i32,
+            flags: 0,
+        }
+    }
+
+    pub fn read(data: &[u8], blocksize: usize) -> io::Result<Options> {
+        match data.len() {
+            0 => Ok(Options::new(blocksize)),
+            8 => {
+                let dictionary_size = LE::read_i32(&data[0..]);
+                let flags =           LE::read_i32(&data[4..]);
+                Ok(Options { dictionary_size, flags })
+            }
+            _ => super::comp_err(),
+        }
+    }
+
+    pub fn decoder(&self) -> io::Result<Box<Decompress>> {
+        Ok(Box::new(XZDec(unsafe { mem::zeroed() })))
+    }
+}
+
+struct XZDec(lzma_sys::lzma_stream);
 
 impl Drop for XZDec {
     fn drop(&mut self) {

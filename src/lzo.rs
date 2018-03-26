@@ -1,13 +1,63 @@
-use std::io;
+use std::{io, fmt};
+use byteorder::ByteOrder;
+use byteorder::LittleEndian as LE;
 use rust_lzo;
 
 use super::Decompress;
 
-struct LZODec;
+/* Define the compression flags recognised. */
+//const SQUASHFS_LZO1X_1:    i32 = 0;
+//const SQUASHFS_LZO1X_1_11: i32 = 1;
+//const SQUASHFS_LZO1X_1_12: i32 = 2;
+//const SQUASHFS_LZO1X_1_15: i32 = 3;
+const SQUASHFS_LZO1X_999:  i32 = 4;
 
-pub fn decompress() -> io::Result<Box<Decompress>> {
-    Ok(Box::new(LZODec))
+#[derive(PartialEq)]
+pub struct Options {
+    algorithm: i32,
+    compression_level: i32,
 }
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            algorithm: SQUASHFS_LZO1X_999,
+            compression_level: 8,
+        }
+    }
+}
+
+impl fmt::Display for Options {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "lzo algorithm={} level={}",
+               self.algorithm,
+               self.compression_level)
+    }
+}
+
+impl Options {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn read(data: &[u8]) -> io::Result<Options> {
+        match data.len() {
+            0 => Ok(Options::new()),
+            8 => {
+                let algorithm =         LE::read_i32(&data[0..]);
+                let compression_level = LE::read_i32(&data[4..]);
+                Ok(Options { algorithm, compression_level })
+            }
+            _ => super::comp_err(),
+        }
+    }
+
+    pub fn decoder(&self) -> io::Result<Box<Decompress>> {
+        Ok(Box::new(LZODec))
+    }
+}
+
+struct LZODec;
 
 impl Decompress for LZODec {
     fn decompress(&mut self, ins: &mut [u8], outs: &mut [u8]) -> io::Result<usize> {

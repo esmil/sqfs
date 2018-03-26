@@ -103,26 +103,44 @@ fn not_found<T>() -> io::Result<T> {
     ))
 }
 
+fn comp_err<T>() -> io::Result<T> {
+    Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "error reading compression options"
+            ))
+}
+
+#[derive(PartialEq)]
 pub enum Compression {
-    ZLIB,
-    LZMA,
-    LZO,
-    XZ,
-    LZ4,
+    ZLIB(zlib::Options),
+    LZMA(lzma::Options),
+    LZO(lzo::Options),
+    XZ(xz::Options),
+    LZ4(lz4::Options),
 }
 
 impl Compression {
-    fn new(v: u16) -> io::Result<Compression> {
+    fn new(v: u16, data: &[u8], blocksize: usize) -> io::Result<Compression> {
         match v {
-            ZLIB_COMPRESSION => Ok(Compression::ZLIB),
-            LZMA_COMPRESSION => Ok(Compression::LZMA),
-            LZO_COMPRESSION  => Ok(Compression::LZO),
-            XZ_COMPRESSION   => Ok(Compression::XZ),
-            LZ4_COMPRESSION  => Ok(Compression::LZ4),
+            ZLIB_COMPRESSION => Ok(Compression::ZLIB(zlib::Options::read(data)?)),
+            LZMA_COMPRESSION => Ok(Compression::LZMA(lzma::Options::read(data)?)),
+            LZO_COMPRESSION  => Ok(Compression::LZO(lzo::Options::read(data)?)),
+            XZ_COMPRESSION   => Ok(Compression::XZ(xz::Options::read(data, blocksize)?)),
+            LZ4_COMPRESSION  => Ok(Compression::LZ4(lz4::Options::read(data)?)),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unknown compression type",
             )),
+        }
+    }
+
+    fn decoder(&self) -> io::Result<Box<Decompress>> {
+        match *self {
+            Compression::ZLIB(ref opts) => opts.decoder(),
+            Compression::LZMA(ref opts) => opts.decoder(),
+            Compression::LZO(ref opts)  => opts.decoder(),
+            Compression::XZ(ref opts)   => opts.decoder(),
+            Compression::LZ4(ref opts)  => opts.decoder(),
         }
     }
 }
@@ -130,11 +148,11 @@ impl Compression {
 impl fmt::Display for Compression {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Compression::ZLIB => write!(f, "ZLIB"),
-            Compression::LZMA => write!(f, "LZMA"),
-            Compression::LZO  => write!(f, "LZO"),
-            Compression::XZ   => write!(f, "XZ"),
-            Compression::LZ4  => write!(f, "LZ4"),
+            Compression::ZLIB(ref opts) => opts.fmt(f),
+            Compression::LZMA(ref opts) => opts.fmt(f),
+            Compression::LZO(ref opts)  => opts.fmt(f),
+            Compression::XZ(ref opts)   => opts.fmt(f),
+            Compression::LZ4(ref opts)  => opts.fmt(f),
         }
     }
 }
@@ -174,20 +192,17 @@ impl SuperBlock {
         if magic != SQUASHFS_MAGIC {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "not a squashfs",
+                "not a squashfs"
             ));
         }
         let inodes                = LE::read_u32(&buf[ 4..]);
         let mkfs_time             = LE::read_i32(&buf[ 8..]);
         let block_size            = LE::read_u32(&buf[12..]);
         let fragments             = LE::read_u32(&buf[16..]);
-        let compression           = Compression::new(LE::read_u16(&buf[20..]))?;
+        let compression           = LE::read_u16(&buf[20..]);
         let block_log             = LE::read_u16(&buf[22..]);
         if block_log > SQUASHFS_FILE_MAX_LOG || (1u32 << block_log) != block_size {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid block size",
-            ));
+            return comp_err();
         }
         let flags                 = LE::read_u16(&buf[24..]);
         let no_ids                = LE::read_u16(&buf[26..]);
@@ -202,12 +217,32 @@ impl SuperBlock {
         let fragment_table_start  = LE::read_i64(&buf[80..]);
         let lookup_table_start    = LE::read_i64(&buf[88..]);
 
+        let comp = if flags & SQUASHFS_COMP_OPT == 0 {
+            Compression::new(compression, &buf[..0], block_size as usize)?
+        } else {
+            if h.read_at(&mut buf[..2], offset + SQUASHFS_SUPERBLOCK_SIZE as u64)? != 2 {
+                return comp_err();
+            }
+            let v = LE::read_u16(&buf);
+            if v & 0x8000 == 0 {
+                return comp_err();
+            }
+            let len = (v & 0x7FFF) as usize;
+            if len > buf.len() {
+                return comp_err();
+            }
+            if h.read_at(&mut buf[..len], offset + SQUASHFS_SUPERBLOCK_SIZE as u64 + 2)? != len {
+                return comp_err();
+            }
+            Compression::new(compression, &buf[..len], block_size as usize)?
+        };
+
         Ok(SuperBlock {
             inodes,
             mkfs_time,
             block_size,
             fragments,
-            compression,
+            compression: comp,
             block_log,
             flags,
             no_ids,
@@ -510,13 +545,7 @@ impl SquashFS {
 
         Ok(Decompressor {
             sqfs: self,
-            dec: match self.sb.compression {
-                Compression::ZLIB => zlib::decompress()?,
-                Compression::LZMA => lzma::decompress()?,
-                Compression::LZO  => lzo::decompress()?,
-                Compression::XZ   => xz::decompress()?,
-                Compression::LZ4  => lz4::decompress()?,
-            },
+            dec: self.sb.compression.decoder()?,
             buf,
         })
     }

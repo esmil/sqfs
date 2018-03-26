@@ -1,4 +1,4 @@
-use std::{io, mem};
+use std::{io, mem, fmt};
 use lzma_sys;
 
 use super::Decompress;
@@ -9,11 +9,29 @@ const LZMA_HEADER_SIZE: usize = LZMA_PROPS_SIZE + LZMA_UNCOMP_SIZE;
 
 const MEMLIMIT: u64 = 32 * 1024 * 1024;
 
-struct LZMADec(lzma_sys::lzma_stream);
+#[derive(PartialEq)]
+pub struct Options;
 
-pub fn decompress() -> io::Result<Box<Decompress>> {
-    Ok(Box::new(LZMADec(unsafe { mem::zeroed() })))
+impl fmt::Display for Options {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "lzma")
+    }
 }
+
+impl Options {
+    pub fn read(data: &[u8]) -> io::Result<Options> {
+        match data.len() {
+            0 => Ok(Options),
+            _ => super::comp_err(),
+        }
+    }
+
+    pub fn decoder(&self) -> io::Result<Box<Decompress>> {
+        Ok(Box::new(LZMADec(unsafe { mem::zeroed() })))
+    }
+}
+
+struct LZMADec(lzma_sys::lzma_stream);
 
 impl Drop for LZMADec {
     fn drop(&mut self) {
