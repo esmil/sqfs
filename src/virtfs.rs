@@ -85,10 +85,6 @@ impl Node {
     }
 }
 
-pub struct INode {
-    idx: usize,
-}
-
 pub struct FS {
     nodes: Vec<Node>,
     free: usize,
@@ -99,7 +95,7 @@ impl FS {
         Default::default()
     }
 
-    fn _lookup(&self, path: &[u8]) -> io::Result<usize> {
+    pub fn lookup(&self, path: &[u8]) -> io::Result<usize> {
         let mut idx = 0;
         let mut end = 0;
         while end < path.len() {
@@ -132,14 +128,9 @@ impl FS {
         Ok(idx)
     }
 
-    pub fn lookup(&self, path: &[u8]) -> io::Result<INode> {
-        let idx = self._lookup(path)?;
-        Ok(INode { idx })
-    }
-
-    fn link(&mut self, path: &[u8], node: Node) -> io::Result<INode> {
+    fn link(&mut self, path: &[u8], node: Node) -> io::Result<usize> {
         let (prefix, name) = basename(path)?;
-        let parent = self._lookup(prefix)?;
+        let parent = self.lookup(prefix)?;
         if let Node::Dir(ref mut dir) = self.nodes[parent] {
             if dir.entries.contains_key(name) {
                 return file_exists();
@@ -153,8 +144,8 @@ impl FS {
             self.nodes.push(Node::Unused(0));
         }
         let idx = self.free;
-        if let Node::Unused(n) = self.nodes[idx] {
-            self.free = n;
+        if let Node::Unused(next) = self.nodes[idx] {
+            self.free = next;
         } else {
             panic!("free points to used entry")
         }
@@ -164,12 +155,12 @@ impl FS {
             dir.entries.insert(name.into(), idx);
         }
         debug_assert!(self.validate());
-        Ok(INode { idx })
+        Ok(idx)
     }
 
     pub fn unlink(&mut self, path: &[u8]) -> io::Result<()> {
         let (prefix, name) = basename(path)?;
-        let parent = self._lookup(prefix)?;
+        let parent = self.lookup(prefix)?;
         let idx = if let Node::Dir(ref mut p) = self.nodes[parent] {
             if let Some(idx) = p.entries.remove(name) {
                 idx
@@ -213,9 +204,9 @@ impl FS {
         Ok(())
     }
 
-    pub fn mkdir(&mut self, path: &[u8]) -> io::Result<INode> {
+    pub fn mkdir(&mut self, path: &[u8]) -> io::Result<usize> {
         let (prefix, name) = basename(path)?;
-        let parent = self._lookup(prefix)?;
+        let parent = self.lookup(prefix)?;
         if let Node::Dir(ref mut dir) = self.nodes[parent] {
             if dir.entries.contains_key(name) {
                 return file_exists();
@@ -229,8 +220,8 @@ impl FS {
             self.nodes.push(Node::Unused(0));
         }
         let idx = self.free;
-        if let Node::Unused(n) = self.nodes[idx] {
-            self.free = n;
+        if let Node::Unused(next) = self.nodes[idx] {
+            self.free = next;
         } else {
             panic!("free points to used entry")
         }
@@ -248,10 +239,10 @@ impl FS {
             p.nlink += 1;
         }
         debug_assert!(self.validate());
-        Ok(INode { idx })
+        Ok(idx)
     }
 
-    pub fn newfile(&mut self, path: &[u8], data: Box<io::Read>) -> io::Result<INode> {
+    pub fn newfile(&mut self, path: &[u8], data: Box<io::Read>) -> io::Result<usize> {
         self.link(path, Node::File(File {
             nlink: 1,
             uid: 0,
@@ -261,7 +252,7 @@ impl FS {
         }))
     }
 
-    pub fn symlink(&mut self, tgt: &[u8], path: &[u8]) -> io::Result<INode> {
+    pub fn symlink(&mut self, tgt: &[u8], path: &[u8]) -> io::Result<usize> {
         self.link(path, Node::Symlink(Symlink {
             nlink: 1,
             uid: 0,
@@ -271,24 +262,24 @@ impl FS {
         }))
     }
 
-    pub fn hardlink(&mut self, n: &INode, path: &[u8]) -> io::Result<()> {
-        if let Node::Dir(_) = self.nodes[n.idx] {
+    pub fn hardlink(&mut self, idx: usize, path: &[u8]) -> io::Result<()> {
+        if let Node::Dir(_) = self.nodes[idx] {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "cannot hardlink directories"
             ));
         }
         let (prefix, name) = basename(path)?;
-        let parent = self._lookup(prefix)?;
+        let parent = self.lookup(prefix)?;
         if let Node::Dir(ref mut dir) = self.nodes[parent] {
             if dir.entries.contains_key(name) {
                 return file_exists();
             }
-            dir.entries.insert(name.into(), n.idx);
+            dir.entries.insert(name.into(), idx);
         } else {
             return not_found();
         }
-        match self.nodes[n.idx] {
+        match self.nodes[idx] {
             Node::File(ref mut f)    => f.nlink += 1,
             Node::Symlink(ref mut l) => l.nlink += 1,
             _ => panic!(),
@@ -297,11 +288,11 @@ impl FS {
         Ok(())
     }
 
-    pub fn chown(&mut self, n: &INode, uid: u32, gid: u32) -> io::Result<()> {
-        if n.idx >= self.nodes.len() {
+    pub fn chown(&mut self, idx: usize, uid: u32, gid: u32) -> io::Result<()> {
+        if idx >= self.nodes.len() {
             return not_found();
         }
-        match self.nodes[n.idx] {
+        match self.nodes[idx] {
             Node::Dir(ref mut d)     => { d.uid = uid; d.gid = gid; }
             Node::File(ref mut f)    => { f.uid = uid; f.gid = gid; }
             Node::Symlink(ref mut l) => { l.uid = uid; l.gid = gid; }
@@ -310,11 +301,11 @@ impl FS {
         Ok(())
     }
 
-    pub fn setuid(&mut self, n: &INode, uid: u32) -> io::Result<()> {
-        if n.idx >= self.nodes.len() {
+    pub fn setuid(&mut self, idx: usize, uid: u32) -> io::Result<()> {
+        if idx >= self.nodes.len() {
             return not_found();
         }
-        match self.nodes[n.idx] {
+        match self.nodes[idx] {
             Node::Dir(ref mut d)     => { d.uid = uid }
             Node::File(ref mut f)    => { f.uid = uid }
             Node::Symlink(ref mut l) => { l.uid = uid }
@@ -323,11 +314,11 @@ impl FS {
         Ok(())
     }
 
-    pub fn setgid(&mut self, n: &INode, gid: u32) -> io::Result<()> {
-        if n.idx >= self.nodes.len() {
+    pub fn setgid(&mut self, idx: usize, gid: u32) -> io::Result<()> {
+        if idx >= self.nodes.len() {
             return not_found();
         }
-        match self.nodes[n.idx] {
+        match self.nodes[idx] {
             Node::Dir(ref mut d)     => { d.gid = gid }
             Node::File(ref mut f)    => { f.gid = gid }
             Node::Symlink(ref mut l) => { l.gid = gid }
@@ -336,11 +327,11 @@ impl FS {
         Ok(())
     }
 
-    pub fn chmod(&mut self, n: &INode, mode: u16) -> io::Result<()> {
-        if n.idx >= self.nodes.len() {
+    pub fn chmod(&mut self, idx: usize, mode: u16) -> io::Result<()> {
+        if idx >= self.nodes.len() {
             return not_found();
         }
-        match self.nodes[n.idx] {
+        match self.nodes[idx] {
             Node::Dir(ref mut d)     => { d.mode = mode; }
             Node::File(ref mut f)    => { f.mode = mode; }
             Node::Symlink(ref mut l) => { l.mode = mode; }
@@ -358,9 +349,9 @@ impl FS {
                 if idx >= len {
                     return false;
                 }
-                if let Node::Unused(n) = self.nodes[idx] {
+                if let Node::Unused(next) = self.nodes[idx] {
                     nlinks[idx] += 1;
-                    idx = n;
+                    idx = next;
                 } else {
                     return false;
                 }
@@ -429,14 +420,14 @@ impl fmt::Display for FS {
         let mut path = Vec::new();
 
         while let Some(e) = stack.pop() {
-            if let Some((name, n)) = e {
+            if let Some((name, idx)) = e {
                 path.extend_from_slice(&name);
-                match self.nodes[n] {
+                match self.nodes[idx] {
                     Node::Dir(ref d) => {
-                        writeln!(f, "d {:3} {:2} {:4} {:4} {:4o} {}", n,
+                        writeln!(f, "d {:3} {:2} {:4} {:4} {:4o} {}", idx,
                                  d.nlink, d.uid, d.gid, d.mode, tostr(&path))?;
-                        for (name, n) in &d.entries {
-                            entries.push((name.clone(), *n));
+                        for (name, idx) in &d.entries {
+                            entries.push((name.clone(), *idx));
                         }
                         stack.push(None);
                         while let Some(e) = entries.pop() {
@@ -446,11 +437,11 @@ impl fmt::Display for FS {
                         continue;
                     }
                     Node::File(ref r) => {
-                        writeln!(f, "d {:3} {:2} {:4} {:4} {:4o} {}", n,
+                        writeln!(f, "d {:3} {:2} {:4} {:4} {:4o} {}", idx,
                                  r.nlink, r.uid, r.gid, r.mode, tostr(&path))?;
                     }
                     Node::Symlink(ref s) => {
-                        writeln!(f, "l {:3} {:2} {:4} {:4} {:4o} {} -> {}", n,
+                        writeln!(f, "l {:3} {:2} {:4} {:4} {:4o} {} -> {}", idx,
                                  s.nlink, s.uid, s.gid, s.mode, tostr(&path), tostr(&s.tgt))?;
                     }
                     Node::Unused(_) => panic!("we found inode marked unused")

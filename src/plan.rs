@@ -33,7 +33,7 @@ fn mkdir(fs: &mut FS, entry: &Yaml) -> io::Result<()> {
                     "uid out of range"
                 ));
             }
-            fs.setuid(&n, v as u32)?;
+            fs.setuid(n, v as u32)?;
         }
         Yaml::BadValue => {}
         _ => {
@@ -51,7 +51,7 @@ fn mkdir(fs: &mut FS, entry: &Yaml) -> io::Result<()> {
                     "gid out of range"
                 ));
             }
-            fs.setgid(&n, v as u32)?;
+            fs.setgid(n, v as u32)?;
         }
         Yaml::BadValue => {}
         _ => {
@@ -69,7 +69,7 @@ fn mkdir(fs: &mut FS, entry: &Yaml) -> io::Result<()> {
                     "uid out of range"
                 ));
             }
-            fs.chmod(&n, v as u16)?;
+            fs.chmod(n, v as u16)?;
         }
         Yaml::BadValue => {}
         _ => {
