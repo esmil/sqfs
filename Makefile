@@ -1,8 +1,11 @@
 MAKEFLAGS = -rR
 NAME = sqfs
+STRIP = strip
 CARGO = cargo
 #CARGO_BUILD = $(CARGO) build
 CARGO_BUILD = rustup run nightly cargo clippy
+
+sources = $(wildcard src/*.rs)
 
 ifdef V
 E=@#
@@ -22,13 +25,21 @@ release: target/release/$(NAME)
 	$Q$< list image.sqfs
 	$Q$< sb image.sqfs
 
-target/debug/$(NAME): $(wildcard src/*.rs)
+static: target/x86_64-unknown-linux-musl/release/$(NAME)
+	$E $(STRIP) $@
+	$Q$(STRIP) -s --strip-unneeded -o '$@' '$<'
+
+target/debug/$(NAME): $(sources)
 	$E $(CARGO_BUILD)
 	$Q$(CARGO_BUILD)
 
-target/release/$(NAME): $(wildcard src/*.rs)
+target/release/$(NAME): $(sources)
 	$E $(CARGO) build --release
 	$Q$(CARGO) build --release
+
+target/x86_64-unknown-linux-musl/release/$(NAME): $(sources)
+	$E $(CARGO) build --target x86_64-unknown-linux-musl --release
+	$Q$(CARGO) build --target x86_64-unknown-linux-musl --release
 
 %:
 	$E $(CARGO) $@
