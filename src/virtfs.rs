@@ -128,17 +128,7 @@ impl FS {
         Ok(idx)
     }
 
-    fn link(&mut self, path: &[u8], node: Node) -> io::Result<usize> {
-        let (prefix, name) = basename(path)?;
-        let parent = self.lookup(prefix)?;
-        if let Node::Dir(ref mut dir) = self.nodes[parent] {
-            if dir.entries.contains_key(name) {
-                return file_exists();
-            }
-        } else {
-            return not_found();
-        }
-
+    fn freeindex(&mut self) -> usize {
         if self.free == 0 {
             self.free = self.nodes.len();
             self.nodes.push(Node::Unused(0));
@@ -149,13 +139,21 @@ impl FS {
         } else {
             panic!("free points to used entry")
         }
-        self.nodes[idx] = node;
+        idx
+    }
 
+    fn link(&mut self, path: &[u8], idx: usize) -> io::Result<usize> {
+        let (prefix, name) = basename(path)?;
+        let parent = self.lookup(prefix)?;
         if let Node::Dir(ref mut dir) = self.nodes[parent] {
+            if dir.entries.contains_key(name) {
+                return file_exists();
+            }
             dir.entries.insert(name.into(), idx);
+        } else {
+            return not_found();
         }
-        debug_assert!(self.validate());
-        Ok(idx)
+        Ok(parent)
     }
 
     pub fn unlink(&mut self, path: &[u8]) -> io::Result<()> {
@@ -205,26 +203,8 @@ impl FS {
     }
 
     pub fn mkdir(&mut self, path: &[u8]) -> io::Result<usize> {
-        let (prefix, name) = basename(path)?;
-        let parent = self.lookup(prefix)?;
-        if let Node::Dir(ref mut dir) = self.nodes[parent] {
-            if dir.entries.contains_key(name) {
-                return file_exists();
-            }
-        } else {
-            return not_found();
-        }
-
-        if self.free == 0 {
-            self.free = self.nodes.len();
-            self.nodes.push(Node::Unused(0));
-        }
-        let idx = self.free;
-        if let Node::Unused(next) = self.nodes[idx] {
-            self.free = next;
-        } else {
-            panic!("free points to used entry")
-        }
+        let idx = self.freeindex();
+        let parent = self.link(path, idx)?;
         self.nodes[idx] = Node::Dir(Dir {
             nlink: 2,
             uid: 0,
@@ -233,9 +213,7 @@ impl FS {
             parent,
             entries: BTreeMap::new(),
         });
-
         if let Node::Dir(ref mut p) = self.nodes[parent] {
-            p.entries.insert(name.into(), idx);
             p.nlink += 1;
         }
         debug_assert!(self.validate());
@@ -243,42 +221,44 @@ impl FS {
     }
 
     pub fn newfile(&mut self, path: &[u8], data: Box<io::Read>) -> io::Result<usize> {
-        self.link(path, Node::File(File {
+        let idx = self.freeindex();
+        let _parent = self.link(path, idx)?;
+        self.nodes[idx] = Node::File(File {
             nlink: 1,
             uid: 0,
             gid: 0,
             mode: 0o644,
             data,
-        }))
+        });
+        debug_assert!(self.validate());
+        Ok(idx)
     }
 
     pub fn symlink(&mut self, tgt: &[u8], path: &[u8]) -> io::Result<usize> {
-        self.link(path, Node::Symlink(Symlink {
+        let idx = self.freeindex();
+        let _parent = self.link(path, idx)?;
+        self.nodes[idx] = Node::Symlink(Symlink {
             nlink: 1,
             uid: 0,
             gid: 0,
             mode: 0o777,
             tgt: tgt.into(),
-        }))
+        });
+        debug_assert!(self.validate());
+        Ok(idx)
     }
 
     pub fn hardlink(&mut self, idx: usize, path: &[u8]) -> io::Result<()> {
+        if idx >= self.nodes.len() {
+            return not_found();
+        }
         if let Node::Dir(_) = self.nodes[idx] {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "cannot hardlink directories"
             ));
         }
-        let (prefix, name) = basename(path)?;
-        let parent = self.lookup(prefix)?;
-        if let Node::Dir(ref mut dir) = self.nodes[parent] {
-            if dir.entries.contains_key(name) {
-                return file_exists();
-            }
-            dir.entries.insert(name.into(), idx);
-        } else {
-            return not_found();
-        }
+        let _parent = self.link(path, idx)?;
         match self.nodes[idx] {
             Node::File(ref mut f)    => f.nlink += 1,
             Node::Symlink(ref mut l) => l.nlink += 1,
