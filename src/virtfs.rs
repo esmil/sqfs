@@ -337,32 +337,37 @@ impl FS {
                 }
             }
         }
-        { /* count node links */
+        { /* count node links and check parent references */
             let mut stack = vec![0];
             while let Some(idx) = stack.pop() {
-                if idx >= len {
-                    return false;
-                }
-                match self.nodes[idx] {
-                    Node::Dir(ref d) => {
-                        for v in d.entries.values() {
-                            stack.push(*v)
+                if let Node::Dir(ref d) = self.nodes[idx] {
+                    if nlinks[idx] != 0 {
+                        return false;
+                    }
+                    nlinks[idx] = 2;
+                    for v in d.entries.values() {
+                        let child = *v;
+                        if child >= len {
+                            return false;
                         }
-                        nlinks[idx] += 2;
-                        if idx != 0 {
-                            if let Node::Dir(_) = self.nodes[d.parent] {
-                                nlinks[d.parent] += 1;
-                            } else {
+                        match self.nodes[child] {
+                            Node::Dir(ref c) => {
+                                if c.parent != idx {
+                                    return false;
+                                }
+                                nlinks[idx] += 1;
+                                stack.push(child);
+                            }
+                            Node::Unused(_) => {
                                 return false;
+                            }
+                            _ => {
+                                nlinks[child] += 1;
                             }
                         }
                     }
-                    Node::Unused(_) => {
-                        return false;
-                    }
-                    _ => {
-                        nlinks[idx] += 1;
-                    }
+                } else {
+                    return false;
                 }
             }
         }
