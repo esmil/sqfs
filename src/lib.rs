@@ -62,6 +62,7 @@ const SQUASHFS_NAME_LEN:        usize = 256;
 //const SQUASHFS_FILE_MAX_SIZE:     u32 = 1_048_576;
 const SQUASHFS_FILE_MAX_LOG:      u16 = 20;
 
+// inode types
 const SQUASHFS_DIR_TYPE:      u16 =  1;
 const SQUASHFS_FILE_TYPE:     u16 =  2;
 const SQUASHFS_SYMLINK_TYPE:  u16 =  3;
@@ -78,18 +79,19 @@ const SQUASHFS_LFIFO_TYPE:    u16 = 13;
 const SQUASHFS_LSOCKET_TYPE:  u16 = 14;
 
 // flags
-const SQUASHFS_NOI:         u16 = 0x001; //  0
-const SQUASHFS_NOD:         u16 = 0x002; //  1
-const SQUASHFS_CHECK:       u16 = 0x004; //  2
-const SQUASHFS_NOF:         u16 = 0x008; //  3
-const SQUASHFS_NO_FRAG:     u16 = 0x010; //  4
-const SQUASHFS_ALWAYS_FRAG: u16 = 0x020; //  5
-const SQUASHFS_DUPLICATE:   u16 = 0x040; //  6
-const SQUASHFS_EXPORT:      u16 = 0x080; //  7
-const SQUASHFS_NOX:         u16 = 0x100; //  8
-const SQUASHFS_NO_XATTR:    u16 = 0x200; //  9
-const SQUASHFS_COMP_OPT:    u16 = 0x400; // 10
+const SQUASHFS_NOI:         u16 = 0x001; // bit  0, no inode compression
+const SQUASHFS_NOD:         u16 = 0x002; // bit  1, no data compression
+const SQUASHFS_CHECK:       u16 = 0x004; // bit  2
+const SQUASHFS_NOF:         u16 = 0x008; // bit  3, no fragment compression
+const SQUASHFS_NO_FRAG:     u16 = 0x010; // bit  4, no fragments
+const SQUASHFS_ALWAYS_FRAG: u16 = 0x020; // bit  5
+const SQUASHFS_DUPLICATE:   u16 = 0x040; // bit  6
+const SQUASHFS_EXPORT:      u16 = 0x080; // bit  7
+const SQUASHFS_NOX:         u16 = 0x100; // bit  8, no xattr compression
+const SQUASHFS_NO_XATTR:    u16 = 0x200; // bit  9, no xattrs
+const SQUASHFS_COMP_OPT:    u16 = 0x400; // bit 10, compression options after superblock
 
+// compression
 const ZLIB_COMPRESSION: u16 = 1;
 const LZMA_COMPRESSION: u16 = 2;
 const LZO_COMPRESSION:  u16 = 3;
@@ -98,16 +100,16 @@ const LZ4_COMPRESSION:  u16 = 5;
 
 fn not_found<T>() -> io::Result<T> {
     Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "path not found"
+        io::ErrorKind::NotFound,
+        "path not found"
     ))
 }
 
 fn comp_err<T>() -> io::Result<T> {
     Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "error reading compression options"
-            ))
+        io::ErrorKind::InvalidInput,
+        "error reading compression options"
+    ))
 }
 
 #[derive(PartialEq)]
@@ -939,18 +941,19 @@ impl<'s> Decompressor<'s> {
     pub fn readdir<'d>(&'d mut self, node: &INode) -> io::Result<DirEntryIter<'d, 's>> {
         if let INodeType::Dir { start_block, file_size, offset, ..} = node.typ {
             let addr = self.sqfs.sb.directory_table_start as u64 + u64::from(start_block);
-            return Ok(DirEntryIter {
+            Ok(DirEntryIter {
                 ms: self.metastream(addr, offset)?,
                 bytes: file_size - 3,
                 count: 0,
                 start_block: 0,
                 ino_base: 0,
-            });
+            })
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a directory",
+            ))
         }
-        Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "not a directory",
-        ))
     }
 
     pub fn child(&mut self, node: &INode, name: &[u8]) -> io::Result<INode> {

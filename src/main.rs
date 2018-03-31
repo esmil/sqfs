@@ -1,8 +1,6 @@
-use std::io;
+use std::{io, fs};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
-use std::fs::File;
-use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -43,7 +41,7 @@ fn get_input<'a>(m: &'a ArgMatches) -> Option<(&'a OsStr, u64)> {
 }
 
 fn superblock(path: &OsStr, offset: u64) -> io::Result<()> {
-    let file = File::open(path)?;
+    let file = fs::File::open(path)?;
     let sqfs = squashfs::SquashFS::new(Box::new(file), offset)?;
     let sb = &sqfs.sb;
 
@@ -88,7 +86,7 @@ fn superblock(path: &OsStr, offset: u64) -> io::Result<()> {
 }
 
 fn list(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
-    let file = File::open(path)?;
+    let file = fs::File::open(path)?;
     let sqfs = squashfs::SquashFS::new(Box::new(file), offset)?;
     let mut dec = sqfs.decompressor()?;
     let recursive = m.is_present("recursive");
@@ -166,7 +164,7 @@ fn list(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
 }
 
 fn contents(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
-    let file = File::open(path)?;
+    let file = fs::File::open(path)?;
     let sqfs = squashfs::SquashFS::new(Box::new(file), offset)?;
     let mut dec = sqfs.decompressor()?;
     let path = m.value_of_os("PATH").map(|p| p.as_bytes()).unwrap();
@@ -178,7 +176,7 @@ fn contents(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
 }
 
 fn extract(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
-    let file = File::open(path)?;
+    let file = fs::File::open(path)?;
     let sqfs = squashfs::SquashFS::new(Box::new(file), offset)?;
     let mut dec = sqfs.decompressor()?;
     let prefix = m.value_of_os("PATH").map(|p| p.as_bytes()).unwrap_or(b"");
@@ -206,7 +204,7 @@ fn extract(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
                     continue;
                 }
                 squashfs::INodeType::File { .. } => {
-                    let mut file = OpenOptions::new()
+                    let mut file = fs::OpenOptions::new()
                         .write(true)
                         .create_new(true)
                         .mode(u32::from(node.mode()))
