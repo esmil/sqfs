@@ -1,5 +1,4 @@
 use std::{fmt, str, io};
-use std::rc::Rc;
 use std::collections::BTreeMap;
 
 fn tostr(buf: &[u8]) -> &str {
@@ -39,7 +38,7 @@ struct Dir {
     gid: u32,
     mode: u16,
     parent: usize,
-    entries: BTreeMap<Rc<[u8]>,usize>,
+    entries: BTreeMap<Box<[u8]>,usize>,
 }
 
 struct File {
@@ -55,7 +54,7 @@ struct Symlink {
     uid: u32,
     gid: u32,
     mode: u16,
-    tgt: Rc<[u8]>,
+    tgt: Box<[u8]>,
 }
 
 enum Node {
@@ -400,19 +399,19 @@ impl Default for FS {
 impl fmt::Display for FS {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut entries = Vec::new();
-        let mut stack: Vec<Option<(Rc<[u8]>,usize)>> = Vec::new();
-        stack.push(Some(((b"" as &[u8]).into(), 0)));
+        let mut stack: Vec<Option<(&[u8], usize)>> = Vec::new();
+        stack.push(Some((b"", 0)));
         let mut path = Vec::new();
 
         while let Some(e) = stack.pop() {
             if let Some((name, idx)) = e {
-                path.extend_from_slice(&name);
+                path.extend_from_slice(name);
                 match self.nodes[idx] {
                     Node::Dir(ref d) => {
                         writeln!(f, "d {:3} {:2} {:4} {:4} {:4o} {}", idx,
                                  d.nlink, d.uid, d.gid, d.mode, tostr(&path))?;
                         for (name, idx) in &d.entries {
-                            entries.push((name.clone(), *idx));
+                            entries.push((name.as_ref(), *idx));
                         }
                         stack.push(None);
                         while let Some(e) = entries.pop() {
