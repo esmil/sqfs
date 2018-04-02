@@ -2,6 +2,7 @@ use std::{io, mem, fmt};
 use lzma_sys;
 
 use super::Decompress;
+use super::Compress;
 
 const LZMA_PROPS_SIZE:  usize = 5;
 const LZMA_UNCOMP_SIZE: usize = 8;
@@ -18,16 +19,38 @@ impl fmt::Display for Options {
     }
 }
 
+impl Default for Options {
+    fn default() -> Self {
+        Options
+    }
+}
+
 impl Options {
+    fn new() -> Options {
+        Default::default()
+    }
+
     pub fn read(data: &[u8]) -> io::Result<Options> {
         match data.len() {
-            0 => Ok(Options),
+            0 => Ok(Options::new()),
             _ => super::comp_err(),
         }
     }
 
     pub fn decoder(&self) -> io::Result<Box<Decompress>> {
         Ok(Box::new(LZMADec(unsafe { mem::zeroed() })))
+    }
+
+    pub fn encoder(&self, blocksize: usize) -> io::Result<Box<Compress>> {
+        let mut opts: lzma_sys::lzma_options_lzma = unsafe { mem::zeroed() };
+        unsafe { lzma_sys::lzma_lzma_preset(&mut opts, 5) };
+        let mut buf = Vec::with_capacity(blocksize);
+        unsafe { buf.set_len(blocksize) };
+        Ok(Box::new(LZMAEnc {
+            strm: unsafe { mem::zeroed() },
+            opts,
+            buf: buf.into(),
+        }))
     }
 }
 
@@ -77,6 +100,68 @@ impl Decompress for LZMADec {
                 } else {
                     Err(io::Error::new(io::ErrorKind::InvalidInput, "lzma: format error"))
                 },
+            lzma_sys::LZMA_FORMAT_ERROR =>
+                Err(io::Error::new(io::ErrorKind::InvalidInput, "lzma: format error")),
+            lzma_sys::LZMA_OPTIONS_ERROR =>
+                Err(io::Error::new(io::ErrorKind::InvalidInput, "lzma: options error")),
+            lzma_sys::LZMA_DATA_ERROR =>
+                Err(io::Error::new(io::ErrorKind::InvalidInput, "lzma: data error")),
+            lzma_sys::LZMA_MEM_ERROR =>
+                Err(io::Error::new(io::ErrorKind::InvalidInput, "lzma: memory error")),
+            lzma_sys::LZMA_MEMLIMIT_ERROR =>
+                // memory usage limit was reached
+                // the minimum required memlimit value was stored to memlimit
+                Err(io::Error::new(io::ErrorKind::InvalidInput, "lzma: memory limit error")),
+            lzma_sys::LZMA_BUF_ERROR =>
+                Err(io::Error::new(io::ErrorKind::InvalidInput, "lzma: out buffer too small")),
+            lzma_sys::LZMA_PROG_ERROR =>
+                Err(io::Error::new(io::ErrorKind::InvalidInput, "lzma: program error")),
+            _ =>
+                Err(io::Error::new(io::ErrorKind::InvalidInput, "lzma: unknown error")),
+        }
+    }
+}
+
+struct LZMAEnc {
+    strm: lzma_sys::lzma_stream,
+    opts: lzma_sys::lzma_options_lzma,
+    buf: Box<[u8]>,
+}
+
+impl Drop for LZMAEnc {
+    fn drop(&mut self) {
+        unsafe { lzma_sys::lzma_end(&mut self.strm) };
+    }
+}
+
+impl Compress for LZMAEnc {
+    fn compress(&mut self, ins: &mut [u8], blocksize: usize) -> io::Result<&[u8]> {
+        debug_assert!(blocksize <= self.buf.len());
+        self.strm.next_in = &ins[0];
+        self.strm.avail_in = ins.len();
+        self.strm.next_out = &mut self.buf[0];
+        self.strm.avail_out = blocksize;
+
+        self.opts.dict_size = blocksize as u32;
+
+        let mut ret = unsafe {
+            lzma_sys::lzma_alone_encoder(&mut self.strm, &self.opts)
+        };
+        if ret == lzma_sys::LZMA_OK {
+            ret = unsafe {
+                lzma_sys::lzma_code(&mut self.strm, lzma_sys::LZMA_FINISH)
+            };
+        }
+        match ret {
+            lzma_sys::LZMA_STREAM_END => {
+                let mut size = ins.len();
+                for p in &mut self.buf[LZMA_PROPS_SIZE..LZMA_HEADER_SIZE] {
+                    *p = size as u8;
+                    size >>= 8;
+                }
+                let len = self.strm.total_out as usize;
+                Ok(&self.buf[..len])
+            }
             lzma_sys::LZMA_FORMAT_ERROR =>
                 Err(io::Error::new(io::ErrorKind::InvalidInput, "lzma: format error")),
             lzma_sys::LZMA_OPTIONS_ERROR =>

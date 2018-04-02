@@ -14,6 +14,7 @@ use clap::{App, AppSettings, Arg, ArgMatches, SubCommand};
 extern crate squashfs;
 use squashfs::virtfs;
 use squashfs::unsquash;
+use squashfs::squash;
 
 extern crate yaml_rust;
 mod yaml;
@@ -242,7 +243,15 @@ fn plan(path: &OsStr, _m: &ArgMatches) -> io::Result<()> {
     print!("{}", fs);
     println!("validate = {}", fs.validate());
 
-    Ok(())
+    let sqfs = squash::SquashFS::new(&fs)?;
+    let mut file = fs::OpenOptions::new()
+        .truncate(false)
+        .read(false)
+        .write(true)
+        .create(true)
+        .open("test.sqfs")?;
+
+    sqfs.write(&mut file, 0)
 }
 
 fn main() {

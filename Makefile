@@ -18,8 +18,9 @@ endif
 .PHONY: run release
 
 run: target/debug/$(NAME)
-	$Q$< list image.sqfs /etc
-	$Q$< sb image.sqfs
+	$Q$< plan test.yml
+	$Q$< sb test.sqfs
+	$Q$< ls -r test.sqfs
 
 release: target/release/$(NAME)
 	$Q$< list image.sqfs

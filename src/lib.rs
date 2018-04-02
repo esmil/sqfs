@@ -6,6 +6,10 @@ pub trait Decompress {
     fn decompress(&mut self, ins: &mut [u8], outs: &mut [u8]) -> io::Result<usize>;
 }
 
+pub trait Compress {
+    fn compress<'a>(&'a mut self, ins: &mut [u8], blocksize: usize) -> io::Result<&'a [u8]>;
+}
+
 extern crate libz_sys;
 mod zlib;
 
@@ -21,6 +25,7 @@ mod lz4;
 
 pub mod virtfs;
 pub mod unsquash;
+pub mod squash;
 
 const SQUASHFS_SUPERBLOCK_SIZE: usize = 96;
 #[allow(unknown_lints,decimal_literal_representation)]
@@ -110,6 +115,36 @@ impl Compression {
         }
     }
 
+    fn tag(&self) -> u16 {
+        match *self {
+            Compression::ZLIB(_) => ZLIB_COMPRESSION,
+            Compression::LZMA(_) => LZMA_COMPRESSION,
+            Compression::LZO(_)  => LZO_COMPRESSION,
+            Compression::XZ(_)   => XZ_COMPRESSION,
+            Compression::LZ4(_)  => LZ4_COMPRESSION,
+        }
+    }
+
+    #[allow(unused)]
+    fn zlib() -> Compression {
+        Compression::ZLIB(Default::default())
+    }
+
+    #[allow(unused)]
+    fn lzo() -> Compression {
+        Compression::LZO(Default::default())
+    }
+
+    #[allow(unused)]
+    fn lzma() -> Compression {
+        Compression::LZMA(Default::default())
+    }
+
+    #[allow(unused)]
+    fn lz4() -> Compression {
+        Compression::LZ4(Default::default())
+    }
+
     fn decoder(&self) -> io::Result<Box<Decompress>> {
         match *self {
             Compression::ZLIB(ref opts) => opts.decoder(),
@@ -117,6 +152,20 @@ impl Compression {
             Compression::LZO(ref opts)  => opts.decoder(),
             Compression::XZ(ref opts)   => opts.decoder(),
             Compression::LZ4(ref opts)  => opts.decoder(),
+        }
+    }
+
+    fn encoder(&self, blocksize: usize) -> io::Result<Box<Compress>> {
+        match *self {
+            Compression::ZLIB(ref opts) => opts.encoder(blocksize),
+            Compression::LZMA(ref opts) => opts.encoder(blocksize),
+            Compression::LZO(ref opts)  => opts.encoder(blocksize),
+            //Compression::XZ(ref opts)   => opts.encoder(blocksize),
+            Compression::LZ4(ref opts)  => opts.encoder(blocksize),
+            Compression::XZ(_) => Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "xz unsupported"
+            )),
         }
     }
 }

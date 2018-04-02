@@ -4,6 +4,7 @@ use byteorder::LittleEndian as LE;
 use rust_lzo;
 
 use super::Decompress;
+use super::Compress;
 
 /* Define the compression flags recognised. */
 //const SQUASHFS_LZO1X_1:    i32 = 0;
@@ -55,6 +56,15 @@ impl Options {
     pub fn decoder(&self) -> io::Result<Box<Decompress>> {
         Ok(Box::new(LZODec))
     }
+
+    pub fn encoder(&self, blocksize: usize) -> io::Result<Box<Compress>> {
+        let mut buf = Vec::with_capacity(blocksize);
+        unsafe { buf.set_len(blocksize) };
+        Ok(Box::new(LZOEnc {
+            ctx: rust_lzo::LZOContext::new(),
+            buf: buf.into(),
+        }))
+    }
 }
 
 struct LZODec;
@@ -65,6 +75,30 @@ impl Decompress for LZODec {
         match err {
             rust_lzo::LZOError::OK =>
                 Ok(ret.len()),
+            rust_lzo::LZOError::ERROR =>
+                Err(io::Error::new(io::ErrorKind::InvalidInput, "lzo: error")),
+            rust_lzo::LZOError::OUT_OF_MEMORY =>
+                Err(io::Error::new(io::ErrorKind::InvalidInput, "lzo: out of memory")),
+            rust_lzo::LZOError::OUTPUT_OVERRUN =>
+                Err(io::Error::new(io::ErrorKind::InvalidInput, "lzo: output too long")),
+            _ =>
+                Err(io::Error::new(io::ErrorKind::InvalidInput, "lzo: unknown error")),
+        }
+    }
+}
+
+struct LZOEnc {
+    ctx: rust_lzo::LZOContext,
+    buf: Box<[u8]>,
+}
+
+impl Compress for LZOEnc {
+    fn compress(&mut self, ins: &mut [u8], blocksize: usize) -> io::Result<&[u8]> {
+        debug_assert!(blocksize <= self.buf.len());
+        let (ret, err) = self.ctx.compress_to_slice(ins, &mut self.buf);
+        match err {
+            rust_lzo::LZOError::OK =>
+                Ok(ret),
             rust_lzo::LZOError::ERROR =>
                 Err(io::Error::new(io::ErrorKind::InvalidInput, "lzo: error")),
             rust_lzo::LZOError::OUT_OF_MEMORY =>

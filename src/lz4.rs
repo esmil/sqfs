@@ -4,6 +4,7 @@ use byteorder::LittleEndian as LE;
 use lz4_sys;
 
 use super::Decompress;
+use super::Compress;
 
 const LZ4_VERSION_LEGACY: i32 = 1;
 //const LZ4_FLAGS_HC: i32 = 0x1;
@@ -51,6 +52,13 @@ impl Options {
     pub fn decoder(&self) -> io::Result<Box<Decompress>> {
         Ok(Box::new(LZ4Dec(unsafe { lz4_sys::LZ4_createStreamDecode() })))
     }
+
+    pub fn encoder(&self, blocksize: usize) -> io::Result<Box<Compress>> {
+        let bound = unsafe { lz4_sys::LZ4_compressBound(blocksize as i32) } as usize;
+        let mut buf = Vec::with_capacity(bound);
+        unsafe { buf.set_len(bound) };
+        Ok(Box::new(LZ4Enc(buf.into())))
+    }
 }
 
 struct LZ4Dec(*mut lz4_sys::LZ4StreamDecode);
@@ -73,5 +81,27 @@ impl Decompress for LZ4Dec {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "lz4: decoding error"));
         }
         Ok(ret as usize)
+    }
+}
+
+struct LZ4Enc(Box<[u8]>);
+
+impl Compress for LZ4Enc {
+    fn compress(&mut self, ins: &mut [u8], blocksize: usize) -> io::Result<&[u8]> {
+        debug_assert!(unsafe { lz4_sys::LZ4_compressBound(blocksize as i32) } as usize <= self.0.len());
+        let ret;
+        unsafe {
+            let strm = lz4_sys::LZ4_createStream();
+            ret = lz4_sys::LZ4_compress_continue(strm, &ins[0], &mut self.0[0],
+                                           ins.len() as i32);
+            lz4_sys::LZ4_freeStream(strm);
+        };
+        if ret <= 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "lz4: encoding error"
+            ));
+        }
+        Ok(&self.0[..(ret as usize)])
     }
 }
