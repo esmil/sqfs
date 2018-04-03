@@ -32,32 +32,32 @@ fn basename(path: &[u8]) -> io::Result<(&[u8], &[u8])> {
     Ok((&path[..start], &path[start..end]))
 }
 
-struct Dir {
-    nlink: u32,
-    uid: u32,
-    gid: u32,
-    mode: u16,
-    parent: usize,
-    entries: BTreeMap<Box<[u8]>,usize>,
+pub struct Dir {
+    pub nlink: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub mode: u16,
+    pub parent: usize,
+    pub entries: BTreeMap<Box<[u8]>,usize>,
 }
 
-struct File {
-    nlink: u32,
-    uid: u32,
-    gid: u32,
-    mode: u16,
-    data: Box<io::Read>,
+pub struct File {
+    pub nlink: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub mode: u16,
+    pub data: Box<io::Read>,
 }
 
-struct Symlink {
-    nlink: u32,
-    uid: u32,
-    gid: u32,
-    mode: u16,
-    tgt: Box<[u8]>,
+pub struct Symlink {
+    pub nlink: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub mode: u16,
+    pub tgt: Box<[u8]>,
 }
 
-enum Node {
+pub enum Node {
     Dir(Dir),
     File(File),
     Symlink(Symlink),
@@ -74,12 +74,39 @@ impl Node {
         }
     }
     */
-    fn nlink(&self) -> u32 {
+    pub fn nlink(&self) -> u32 {
         match *self {
             Node::Dir(ref d)     => d.nlink,
             Node::File(ref f)    => f.nlink,
             Node::Symlink(ref l) => l.nlink,
             Node::Unused(_)      => 1,
+        }
+    }
+
+    pub fn uid(&self) -> u32 {
+        match *self {
+            Node::Dir(ref d)     => d.uid,
+            Node::File(ref f)    => f.uid,
+            Node::Symlink(ref l) => l.uid,
+            Node::Unused(_)      => panic!(),
+        }
+    }
+
+    pub fn gid(&self) -> u32 {
+        match *self {
+            Node::Dir(ref d)     => d.gid,
+            Node::File(ref f)    => f.gid,
+            Node::Symlink(ref l) => l.gid,
+            Node::Unused(_)      => panic!(),
+        }
+    }
+
+    pub fn mode(&self) -> u16 {
+        match *self {
+            Node::Dir(ref d)     => d.mode,
+            Node::File(ref f)    => f.mode,
+            Node::Symlink(ref l) => l.mode,
+            Node::Unused(_)      => panic!(),
         }
     }
 }
@@ -125,6 +152,14 @@ impl FS {
             }
         }
         Ok(idx)
+    }
+
+    pub fn node(&self, idx: usize) -> &Node {
+        &self.nodes[idx]
+    }
+
+    pub fn nodes(&self) -> usize {
+        self.nodes.len()
     }
 
     fn freeindex(&mut self) -> usize {
