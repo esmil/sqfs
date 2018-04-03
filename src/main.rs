@@ -12,6 +12,8 @@ extern crate clap;
 use clap::{App, AppSettings, Arg, ArgMatches, SubCommand};
 
 extern crate squashfs;
+use squashfs::virtfs;
+use squashfs::unsquash;
 
 extern crate yaml_rust;
 mod yaml;
@@ -42,7 +44,7 @@ fn get_input<'a>(m: &'a ArgMatches) -> Option<(&'a OsStr, u64)> {
 
 fn superblock(path: &OsStr, offset: u64) -> io::Result<()> {
     let file = fs::File::open(path)?;
-    let sqfs = squashfs::SquashFS::new(Box::new(file), offset)?;
+    let sqfs = unsquash::SquashFS::new(Box::new(file), offset)?;
     let sb = &sqfs.sb;
 
     println!("inodes:                {}", sb.inodes);
@@ -87,7 +89,7 @@ fn superblock(path: &OsStr, offset: u64) -> io::Result<()> {
 
 fn list(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
     let file = fs::File::open(path)?;
-    let sqfs = squashfs::SquashFS::new(Box::new(file), offset)?;
+    let sqfs = unsquash::SquashFS::new(Box::new(file), offset)?;
     let mut dec = sqfs.decompressor()?;
     let recursive = m.is_present("recursive");
     let prefix = m.value_of_os("PATH").map(|p| p.as_bytes()).unwrap_or(b"");
@@ -113,7 +115,7 @@ fn list(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
             let uid = ids[node.uid_idx()];
             let gid = ids[node.gid_idx()];
             match node.typ {
-                squashfs::INodeType::Dir { parent, .. } => {
+                unsquash::INodeType::Dir { parent, .. } => {
                     println!("{} {:3} {:2} {:4} {:4} {:4o} {} {}", typc, ino, nlink, uid, gid, mode,
                              tostr(&path), parent);
                     if recursive || stack.is_empty() {
@@ -131,23 +133,23 @@ fn list(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
                         continue;
                     }
                 }
-                squashfs::INodeType::File { file_size, .. } => {
+                unsquash::INodeType::File { file_size, .. } => {
                     println!("{} {:3} {:2} {:4} {:4} {:4o} {} {}", typc, ino, nlink, uid, gid, mode,
                              tostr(&path), file_size );
                 }
-                squashfs::INodeType::Symlink { ref tgt } => {
+                unsquash::INodeType::Symlink { ref tgt } => {
                     println!("{} {:3} {:2} {:4} {:4} {:4o} {} -> {}", typc, ino, nlink, uid, gid, mode,
                              tostr(&path), tostr(tgt));
                 }
-                squashfs::INodeType::CharDev { rdev } |
-                squashfs::INodeType::BlockDev { rdev } => {
+                unsquash::INodeType::CharDev { rdev } |
+                unsquash::INodeType::BlockDev { rdev } => {
                     let maj = rdev >> 8;
                     let min = rdev & 0xff;
                     println!("{} {:3} {:2} {:4} {:4} {:4o} {} {}:{}", typc, ino, nlink, uid, gid, mode,
                              tostr(&path), maj, min);
                 }
-                squashfs::INodeType::Fifo |
-                squashfs::INodeType::Socket => {
+                unsquash::INodeType::Fifo |
+                unsquash::INodeType::Socket => {
                     println!("{} {:3} {:2} {:4} {:4} {:4o} {}", typc, ino, nlink, uid, gid, mode,
                              tostr(&path));
                 }
@@ -165,7 +167,7 @@ fn list(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
 
 fn contents(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
     let file = fs::File::open(path)?;
-    let sqfs = squashfs::SquashFS::new(Box::new(file), offset)?;
+    let sqfs = unsquash::SquashFS::new(Box::new(file), offset)?;
     let mut dec = sqfs.decompressor()?;
     let path = m.value_of_os("PATH").map(|p| p.as_bytes()).unwrap();
     let node = dec.lookup(path)?;
@@ -177,7 +179,7 @@ fn contents(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
 
 fn extract(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
     let file = fs::File::open(path)?;
-    let sqfs = squashfs::SquashFS::new(Box::new(file), offset)?;
+    let sqfs = unsquash::SquashFS::new(Box::new(file), offset)?;
     let mut dec = sqfs.decompressor()?;
     let prefix = m.value_of_os("PATH").map(|p| p.as_bytes()).unwrap_or(b"");
     //let ids = dec.ids()?;
@@ -192,7 +194,7 @@ fn extract(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
             path.push(OsStr::from_bytes(&name));
             println!("{}", path.display());
             match node.typ {
-                squashfs::INodeType::Dir { .. } => {
+                unsquash::INodeType::Dir { .. } => {
                     std::fs::create_dir(&path)?;
                     for p in dec.readdir(&node)? {
                         entries.push(p?)
@@ -203,7 +205,7 @@ fn extract(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
                     }
                     continue;
                 }
-                squashfs::INodeType::File { .. } => {
+                unsquash::INodeType::File { .. } => {
                     let mut file = fs::OpenOptions::new()
                         .write(true)
                         .create_new(true)
@@ -212,7 +214,7 @@ fn extract(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
 
                     dec.write(&node, &mut file)?;
                 }
-                squashfs::INodeType::Symlink { ref tgt, .. } => {
+                unsquash::INodeType::Symlink { ref tgt, .. } => {
                     std::os::unix::fs::symlink(OsStr::from_bytes(tgt), &path)?;
                 }
                 _ => {
@@ -234,7 +236,7 @@ fn plan(path: &OsStr, _m: &ArgMatches) -> io::Result<()> {
         ));
     }
 
-    let mut fs = squashfs::virtfs::FS::new();
+    let mut fs = virtfs::FS::new();
     plan::add(&mut fs, &res[0])?;
 
     print!("{}", fs);
