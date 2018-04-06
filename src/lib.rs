@@ -1,5 +1,6 @@
 use std::{fmt, io};
 
+extern crate libc;
 extern crate byteorder;
 
 pub trait Decompress {
@@ -141,6 +142,11 @@ impl Compression {
     }
 
     #[allow(unused)]
+    fn xz(blocksize: usize) -> Compression {
+        Compression::XZ(xz::Options::new(blocksize))
+    }
+
+    #[allow(unused)]
     fn lz4() -> Compression {
         Compression::LZ4(Default::default())
     }
@@ -160,12 +166,8 @@ impl Compression {
             Compression::ZLIB(ref opts) => opts.encoder(blocksize),
             Compression::LZMA(ref opts) => opts.encoder(blocksize),
             Compression::LZO(ref opts)  => opts.encoder(blocksize),
-            //Compression::XZ(ref opts)   => opts.encoder(blocksize),
+            Compression::XZ(ref opts)   => opts.encoder(blocksize),
             Compression::LZ4(ref opts)  => opts.encoder(blocksize),
-            Compression::XZ(_) => Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "xz unsupported"
-            )),
         }
     }
 }

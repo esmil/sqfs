@@ -297,6 +297,7 @@ impl<'a> SquashFS<'a> {
         println!("id_table = {:?}", &id_table);
 
         Ok(SquashFS {
+            //comp: Compression::xz(1usize << 17),
             comp: Compression::zlib(),
             inodes,
             idx_to_ino,

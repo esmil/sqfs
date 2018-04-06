@@ -2,8 +2,8 @@ MAKEFLAGS = -rR
 NAME = sqfs
 STRIP = strip
 CARGO = cargo
-#CARGO_BUILD = $(CARGO) build
-CARGO_BUILD = rustup run nightly cargo clippy
+CARGO_BUILD = $(CARGO) build --bins
+#CARGO_BUILD = cargo +nightly clippy --bins
 
 sources = $(wildcard src/*.rs)
 
