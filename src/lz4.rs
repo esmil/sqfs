@@ -49,7 +49,7 @@ impl Options {
         }
     }
 
-    pub fn decoder(&self) -> io::Result<Box<Decompress>> {
+    pub fn decoder(&self) -> io::Result<Box<dyn Decompress>> {
         Ok(Box::new(LZ4Dec(unsafe { lz4_sys::LZ4_createStreamDecode() })))
     }
 

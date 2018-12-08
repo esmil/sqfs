@@ -197,7 +197,7 @@ impl YamlLoader {
             anchor_map: BTreeMap::new(),
         };
         let mut parser = Parser::new(source.chars());
-        try!(parser.load(&mut loader, true));
+        parser.load(&mut loader, true)?;
         Ok(loader.docs)
     }
 }
@@ -295,7 +295,6 @@ impl Yaml {
     */
 }
 
-#[cfg_attr(feature = "cargo-clippy", allow(should_implement_trait))]
 impl Yaml {
     // Not implementing FromStr because there is no possibility of Error.
     // This function falls back to Yaml::String if nothing else matches.

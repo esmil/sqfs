@@ -1,0 +1,81 @@
+---
+vars:
+  passwd:
+    esmil:
+      uid: 1000
+      gid: 100
+      shell: /usr/bin/bash
+  groups:
+    users:
+      gid: 100
+  sshd:
+    PasswordAuthentication: no
+plan:
+- action: symlink
+  dest: 'bin'
+  target: 'usr/bin'
+- action: mkdir
+  dest: 'boot'
+- action: mkdir
+  dest: 'etc'
+- action: mkdir
+  dest: 'home'
+- action: symlink
+  dest: 'lib'
+  target: 'usr/lib'
+- action: mkdir
+  dest: 'proc'
+- action: mkdir
+  dest: 'root'
+- action: mkdir
+  dest: 'run'
+- action: symlink
+  dest: 'sbin'
+  target: 'usr/bin'
+- action: mkdir
+  dest: 'sys'
+- action: mkdir
+  dest: 'usr'
+- action: mkdir
+  dest: 'usr/bin'
+- action: mkdir
+  dest: 'usr/lib'
+- action: symlink
+  dest: 'usr/sbin'
+  target: 'bin'
+- action: mkdir
+  dest: 'var'
+
+- action: mkdir
+  dest: home/esmil
+  owner: 1000
+  group: 100
+  mode: 0700
+  recursive: true
+
+- action: symlink
+  dest: 'usr/bin/sh'
+  target: 'bash'
+
+#- action: mkdir
+#  dest: etc
+#  overwrite: true
+
+#- action: template
+#  dest: /etc/ssh/sshd_config
+#  src: sshd_config.template
+#- action: file
+#  dest: /etc/ssh/sshd_config
+#  overwrite: yes
+#- action: chmod
+#  dest: etc/ssh/sshd_config
+#  mode: 0600
+#- action: file
+#  dest: /etc/hostname
+#  #content: "myhost\n"
+#  content: !!binary YWJjCg==
+#  owner: 0
+#  group: 0
+#  mode: 0644
+
+# vim: set st=2 sw=2 et:

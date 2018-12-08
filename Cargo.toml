@@ -2,6 +2,7 @@
 name = "sqfs"
 version = "0.0.1"
 authors = ["Emil Renner Berthing <esmil@mailme.dk>"]
+edition = "2018"
 
 [dependencies]
 time = "*"
@@ -13,6 +14,7 @@ lzma-sys = "*"
 rust-lzo = "*"
 lz4-sys = "*"
 yaml-rust = "*"
+virtfs = { path = "../virtfs" }
 
 [lib]
 name = "squashfs"

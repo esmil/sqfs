@@ -24,7 +24,7 @@ impl ReadAt for fs::File {
     }
 }
 
-fn tostr(buf: &[u8]) -> &str {
+fn to_str(buf: &[u8]) -> &str {
     std::str::from_utf8(buf).unwrap_or("<non-utf8>")
 }
 
@@ -132,8 +132,8 @@ impl SuperBlock {
         let fragment_table_start  = LE::read_i64(&buf[80..]);
         let lookup_table_start    = LE::read_i64(&buf[88..]);
 
-        let comp = if flags & SQUASHFS_COMP_OPT == 0 {
-            Compression::new(compression, &buf[..0], block_size as usize)?
+        let compression = if flags & SQUASHFS_COMP_OPT == 0 {
+            Compression::from_data(compression, &buf[..0], block_size as usize)?
         } else {
             if h.read_at(&mut buf[..2], offset + SQUASHFS_SUPERBLOCK_SIZE as u64)? != 2 {
                 return comp_err();
@@ -149,7 +149,7 @@ impl SuperBlock {
             if h.read_at(&mut buf[..len], offset + SQUASHFS_SUPERBLOCK_SIZE as u64 + 2)? != len {
                 return comp_err();
             }
-            Compression::new(compression, &buf[..len], block_size as usize)?
+            Compression::from_data(compression, &buf[..len], block_size as usize)?
         };
 
         Ok(SuperBlock {
@@ -157,7 +157,7 @@ impl SuperBlock {
             mkfs_time,
             block_size,
             fragments,
-            compression: comp,
+            compression,
             block_log,
             flags,
             no_ids,
@@ -232,7 +232,7 @@ impl fmt::Display for INode {
                 write!(f, "File({}, {:o})", self.ino, self.mode)
             }
             INodeType::Symlink { ref tgt, .. } => {
-                write!(f, "Symlink({}, {:o}, '{}')", self.ino, self.mode, tostr(tgt))
+                write!(f, "Symlink({}, {:o}, '{}')", self.ino, self.mode, to_str(tgt))
             }
             INodeType::BlockDev { .. } => write!(f, "BlockDev({})", self.ino),
             INodeType::CharDev { .. }  => write!(f, "CharDev({})", self.ino),
@@ -418,7 +418,7 @@ impl<'d, 's> MetaStream<'d, 's> {
 }
 
 pub struct SquashFS {
-    handle: Box<ReadAt>,
+    handle: Box<dyn ReadAt>,
     offset: u64,
     pub sb: SuperBlock,
     metacache: RwLock<HashMap<u64, MetaEntry>>,
@@ -426,8 +426,8 @@ pub struct SquashFS {
 }
 
 impl SquashFS {
-    pub fn new(handle: Box<ReadAt>, offset: u64) -> io::Result<SquashFS> {
-        let sb = SuperBlock::read(&*handle, offset)?;
+    pub fn new(handle: Box<dyn ReadAt>, offset: u64) -> io::Result<SquashFS> {
+        let sb = SuperBlock::read(handle.deref(), offset)?;
         Ok(SquashFS {
             handle,
             offset,
@@ -522,7 +522,7 @@ impl<'s> Decompressor<'s> {
             v
         }.into();
 
-        debug!("reading metablock {}, {} -> {} bytes, compressed = {}", addr, blocklen, data.len(), compressed);
+        debug!("read metablock {}, {} -> {} bytes, compressed = {}", addr, blocklen, data.len(), compressed);
         let next = if data.len() < SQUASHFS_METADATA_SIZE {
             0
         } else {
@@ -978,7 +978,7 @@ impl<'s> Decompressor<'s> {
         let mut end = 0;
         while end < path.len() {
             //debug!("end = {}, node = {}", end, &node);
-            if let INodeType::Dir { .. } = (&cache[&ino]).typ {
+            if let INodeType::Dir { .. } = cache[&ino].typ {
             } else {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -998,7 +998,7 @@ impl<'s> Decompressor<'s> {
                 continue;
             }
             if part == b".." {
-                if let INodeType::Dir { parent, .. } = (&cache[&ino]).typ {
+                if let INodeType::Dir { parent, .. } = cache[&ino].typ {
                     if let Some(n) = cache.get(&parent) {
                         ino = n.ino;
                     } else {
@@ -1103,13 +1103,13 @@ impl<'s> Decompressor<'s> {
             let blocksize = self.sqfs.blocksize();
             let mut buf = Vec::with_capacity(blocksize);
             unsafe { buf.set_len(blocksize) };
-            for v in block_list.iter() {
+            for &v in block_list.iter() {
                 let len = if file_size < blocksize as u64 {
                     file_size as usize
                 } else {
                     blocksize
                 };
-                let (rlen, len) = self.readblock(&mut buf[..len], start_block, *v)?;
+                let (rlen, len) = self.readblock(&mut buf[..len], start_block, v)?;
                 start_block += rlen as u64;
                 file_size -= len as u64;
                 out.write_all(&buf[..len])?;
@@ -1127,7 +1127,7 @@ impl<'s> Decompressor<'s> {
         } else {
             Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "not a directory",
+                "not a file",
             ))
         }
     }

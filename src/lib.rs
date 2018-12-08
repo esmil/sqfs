@@ -11,6 +11,10 @@ pub trait Compress {
     fn compress<'a>(&'a mut self, ins: &mut [u8], blocksize: usize) -> io::Result<&'a [u8]>;
 }
 
+pub trait FileData {
+    fn open(&self) -> io::Result<Box<dyn io::Read>>;
+}
+
 extern crate libz_sys;
 mod zlib;
 
@@ -24,12 +28,10 @@ mod lzo;
 extern crate lz4_sys;
 mod lz4;
 
-pub mod virtfs;
 pub mod unsquash;
 pub mod squash;
 
 const SQUASHFS_SUPERBLOCK_SIZE: usize = 96;
-#[allow(unknown_lints,decimal_literal_representation)]
 const SQUASHFS_METADATA_SIZE:   usize = 8192;
 const SQUASHFS_MAGIC:             u32 = 0x7371_7368;
 const SQUASHFS_INVALID_FRAG:      u32 = 0xffff_ffff;
@@ -102,7 +104,7 @@ pub enum Compression {
 }
 
 impl Compression {
-    fn new(v: u16, data: &[u8], blocksize: usize) -> io::Result<Compression> {
+    fn from_data(v: u16, data: &[u8], blocksize: usize) -> io::Result<Compression> {
         match v {
             ZLIB_COMPRESSION => Ok(Compression::ZLIB(zlib::Options::read(data)?)),
             LZMA_COMPRESSION => Ok(Compression::LZMA(lzma::Options::read(data)?)),

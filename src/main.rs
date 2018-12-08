@@ -12,7 +12,7 @@ extern crate clap;
 use clap::{App, AppSettings, Arg, ArgMatches, SubCommand};
 
 extern crate squashfs;
-use squashfs::virtfs;
+use virtfs::VirtFS;
 use squashfs::unsquash;
 use squashfs::squash;
 
@@ -20,7 +20,26 @@ extern crate yaml_rust;
 mod yaml;
 mod plan;
 
-fn tostr(buf: &[u8]) -> &str {
+enum FileData {
+    Path(PathBuf),
+    Static(&'static [u8]),
+}
+
+impl squashfs::FileData for FileData {
+    fn open(&self) -> io::Result<Box<dyn io::Read>> {
+        match *self {
+            FileData::Path(ref p) => {
+                println!("Opening '{}'", p.to_str().unwrap_or("<non-utf8>"));
+                Ok(Box::new(std::fs::File::open(p)?))
+            }
+            FileData::Static(buf) => {
+                Ok(Box::new(std::io::Cursor::new(buf)))
+            }
+        }
+    }
+}
+
+fn to_str(buf: &[u8]) -> &str {
     std::str::from_utf8(buf).unwrap_or("<non-utf8>")
 }
 
@@ -93,73 +112,66 @@ fn list(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
     let sqfs = unsquash::SquashFS::new(Box::new(file), offset)?;
     let mut dec = sqfs.decompressor()?;
     let recursive = m.is_present("recursive");
+    let mut first = true;
     let prefix = m.value_of_os("PATH").map(|p| p.as_bytes()).unwrap_or(b"");
     let ids = dec.ids()?;
     let mut entries = Vec::new();
-    let mut path = Vec::new();
+    let mut path = String::new();
     let mut stack = Vec::new();
 
     if prefix.is_empty() {
-        path.push(b'/')
+        path.push('/')
     } else {
-        path.extend_from_slice(prefix);
+        path.push_str(to_str(prefix));
     }
-    stack.push(Some((Box::new([]) as Box<[u8]>, Box::new(dec.lookup(prefix)?))));
+    stack.push((Box::new([]) as Box<[u8]>, Box::new(dec.lookup(prefix)?), path.len()));
 
-    while let Some(e) = stack.pop() {
-        if let Some((name, node)) = e {
-            path.extend_from_slice(&name);
-            let typc = node.typechar();
-            let ino = node.ino();
-            let nlink = node.nlink();
-            let mode = node.mode();
-            let uid = ids[node.uid_idx()];
-            let gid = ids[node.gid_idx()];
-            match node.typ {
-                unsquash::INodeType::Dir { parent, .. } => {
-                    println!("{} {:3} {:2} {:4} {:4} {:4o} {} {}", typc, ino, nlink, uid, gid, mode,
-                             tostr(&path), parent);
-                    if recursive || stack.is_empty() {
-                        for p in dec.readdir(&node)? {
-                            entries.push(p?)
-                        }
-                        stack.push(None);
-                        while let Some(e) = entries.pop() {
-                            stack.push(Some(e));
-                        }
-                        if let Some(&b'/') = path.last() {
-                        } else {
-                            path.push(b'/');
-                        }
-                        continue;
+    while let Some((name, node, len)) = stack.pop() {
+        path.truncate(len);
+        path.push_str(to_str(name.as_ref()));
+        let typc = node.typechar();
+        let ino = node.ino();
+        let nlink = node.nlink();
+        let mode = node.mode();
+        let uid = ids[node.uid_idx()];
+        let gid = ids[node.gid_idx()];
+        match node.typ {
+            unsquash::INodeType::Dir { parent, .. } => {
+                println!("{} {:3} {:2} {:4} {:4} {:4o} {} {}", typc, ino, nlink, uid, gid, mode,
+                         &path, parent);
+                if recursive || first {
+                    first = false;
+                    if !path.ends_with('/') {
+                        path.push('/');
+                    }
+                    for p in dec.readdir(&node)? {
+                        entries.push(p?)
+                    }
+                    while let Some((name, node)) = entries.pop() {
+                        stack.push((name, node, path.len()));
                     }
                 }
-                unsquash::INodeType::File { file_size, .. } => {
-                    println!("{} {:3} {:2} {:4} {:4} {:4o} {} {}", typc, ino, nlink, uid, gid, mode,
-                             tostr(&path), file_size );
-                }
-                unsquash::INodeType::Symlink { ref tgt } => {
-                    println!("{} {:3} {:2} {:4} {:4} {:4o} {} -> {}", typc, ino, nlink, uid, gid, mode,
-                             tostr(&path), tostr(tgt));
-                }
-                unsquash::INodeType::CharDev { rdev } |
-                unsquash::INodeType::BlockDev { rdev } => {
-                    let maj = rdev >> 8;
-                    let min = rdev & 0xff;
-                    println!("{} {:3} {:2} {:4} {:4} {:4o} {} {}:{}", typc, ino, nlink, uid, gid, mode,
-                             tostr(&path), maj, min);
-                }
-                unsquash::INodeType::Fifo |
-                unsquash::INodeType::Socket => {
-                    println!("{} {:3} {:2} {:4} {:4} {:4o} {}", typc, ino, nlink, uid, gid, mode,
-                             tostr(&path));
-                }
             }
-        } else {
-            path.pop();
-        }
-        while !path.is_empty() && path[path.len() - 1] != b'/' {
-            path.pop();
+            unsquash::INodeType::File { file_size, .. } => {
+                println!("{} {:3} {:2} {:4} {:4} {:4o} {} {}", typc, ino, nlink, uid, gid, mode,
+                         &path, file_size );
+            }
+            unsquash::INodeType::Symlink { ref tgt } => {
+                println!("{} {:3} {:2} {:4} {:4} {:4o} {} -> {}", typc, ino, nlink, uid, gid, mode,
+                         &path, to_str(tgt));
+            }
+            unsquash::INodeType::CharDev { rdev } |
+            unsquash::INodeType::BlockDev { rdev } => {
+                let maj = rdev >> 8;
+                let min = rdev & 0xff;
+                println!("{} {:3} {:2} {:4} {:4} {:4o} {} {}:{}", typc, ino, nlink, uid, gid, mode,
+                         &path, maj, min);
+            }
+            unsquash::INodeType::Fifo |
+            unsquash::INodeType::Socket => {
+                println!("{} {:3} {:2} {:4} {:4} {:4o} {}", typc, ino, nlink, uid, gid, mode,
+                         &path);
+            }
         }
     }
 
@@ -170,7 +182,7 @@ fn contents(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
     let file = fs::File::open(path)?;
     let sqfs = unsquash::SquashFS::new(Box::new(file), offset)?;
     let mut dec = sqfs.decompressor()?;
-    let path = m.value_of_os("PATH").map(|p| p.as_bytes()).unwrap();
+    let path = m.value_of_os("PATH").unwrap().as_bytes();
     let node = dec.lookup(path)?;
 
     dec.write(&node, &mut io::stdout())?;
@@ -230,31 +242,28 @@ fn extract(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
 
 fn plan(path: &OsStr, _m: &ArgMatches) -> io::Result<()> {
     let res = plan::parsefile(path)?;
-    if res.len() < 1 {
+    if res.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "no YAML document found",
         ));
     }
 
-    let mut fs = virtfs::FS::new();
+    let mut fs = VirtFS::<FileData>::new();
     plan::add(&mut fs, &res[0])?;
 
     print!("{}", fs);
     println!("validate = {}", fs.validate());
 
-    let sqfs = squash::SquashFS::new(&fs)?;
     let mut file = fs::OpenOptions::new()
-        .truncate(false)
-        .read(false)
         .write(true)
         .create(true)
         .open("test.sqfs")?;
 
-    sqfs.write(&mut file, 0)
+    squash::write(&fs, &mut file, 0)
 }
 
-fn main() {
+fn parse_args<'a>() -> ArgMatches<'a> {
     let offset = Arg::with_name("offset")
         .short("o")
         .long("offset")
@@ -264,7 +273,7 @@ fn main() {
     let input = Arg::with_name("INPUT")
         .help("SquashFS file")
         .required(true);
-    let matches = App::new("sqfs")
+    App::new("sqfs")
         .version("0.0.1")
         //.usage("")
         //.author("Emil Renner Berthing")
@@ -306,9 +315,11 @@ fn main() {
             .arg(Arg::with_name("PLAN")
                 .help("plan file")
                 .required(true)))
-        .get_matches();
+        .get_matches()
+}
 
-    match matches.subcommand() {
+fn main() {
+    match parse_args().subcommand() {
         ("superblock", Some(m)) => {
             let (path, offset) = get_input(m).unwrap_or_else(fail);
 

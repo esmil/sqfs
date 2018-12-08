@@ -27,20 +27,21 @@ use super::SQUASHFS_LREG_TYPE;
 
 use super::Compression;
 use super::Compress;
+use super::FileData;
 
-use virtfs as vfs;
+use virtfs;
 
 enum Visit {
     Down(usize),
     Up(usize),
 }
 
-enum INodeType<'a> {
+enum INodeType<'a, T> {
     Dir {
-        d: &'a vfs::Dir,
+        d: &'a virtfs::Dir,
     },
     File {
-        f: &'a vfs::File,
+        f: &'a virtfs::File<T>,
         start_block: u64,
         fragment: u32,
         offset: u32,
@@ -48,24 +49,24 @@ enum INodeType<'a> {
         block_list: Vec<u32>,
     },
     Symlink {
-        l: &'a vfs::Symlink,
+        l: &'a virtfs::Symlink,
     },
 }
 
-struct INode<'a> {
+struct INode<'a, T> {
     start_block: u32,
     offset: u16,
-    typ: INodeType<'a>,
+    typ: INodeType<'a, T>,
 }
 
-impl<'a> INode<'a> {
-    fn new(n: &'a vfs::Node) -> INode<'a> {
+impl<'a, T> INode<'a, T> {
+    fn new(n: &'a virtfs::Node<T>) -> INode<'a, T> {
         INode {
             start_block: 0,
             offset: 0,
             typ: match *n {
-                vfs::Node::Dir(ref d)     => INodeType::Dir { d },
-                vfs::Node::File(ref f)    => INodeType::File {
+                virtfs::Node::Dir(ref d)     => INodeType::Dir { d },
+                virtfs::Node::File(ref f)    => INodeType::File {
                     f,
                     start_block: 0,
                     fragment: SQUASHFS_INVALID_FRAG,
@@ -73,8 +74,7 @@ impl<'a> INode<'a> {
                     file_size: 0,
                     block_list: Vec::new(),
                 },
-                vfs::Node::Symlink(ref l) => INodeType::Symlink { l },
-                vfs::Node::Unused(_)      => panic!(),
+                virtfs::Node::Symlink(ref l) => INodeType::Symlink { l },
             },
         }
     }
@@ -136,7 +136,7 @@ struct MetaStream<T : Push> {
 
 impl<'a> MetaStream<ToFile<'a>> {
     fn new(file: &mut fs::File) -> MetaStream<ToFile> {
-        MetaStream::<ToFile> {
+        MetaStream {
             out: ToFile { file, pos: 0 },
             offset: 0,
             buf: unsafe { mem::uninitialized() },
@@ -151,6 +151,12 @@ impl Default for MetaStream<ToBuffer> {
             offset: 0,
             buf: unsafe { mem::uninitialized() },
         }
+    }
+}
+
+impl MetaStream<ToBuffer> {
+    fn new() -> Self {
+        Default::default()
     }
 }
 
@@ -228,10 +234,10 @@ impl<T : Push> MetaStream<T> {
     }
 }
 
-pub struct SquashFS<'a> {
+struct MetaData<'a, T> {
     comp: Compression,
-    inodes: Vec<INode<'a>>,
-    idx_to_ino: Vec<usize>,
+    inodes: Vec<INode<'a, T>>,
+    idx_to_ino: Box<[usize]>,
     id_table: BTreeMap<u32, u16>,
     fpos: u64,
     block_log: u16,
@@ -246,34 +252,30 @@ pub struct SquashFS<'a> {
     lookup_table_start: i64,
 }
 
-impl<'a> SquashFS<'a> {
-    pub fn new(fs: &'a vfs::FS) -> io::Result<SquashFS<'a>> {
+impl<'a, T : FileData> MetaData<'a, T> {
+    fn new(fs: &virtfs::VirtFS<T>) -> MetaData<T> {
         let mut inodes = Vec::new();
         let mut idx_to_ino = vec![0; fs.nodes()];
         let mut id_table: BTreeMap<u32, u16> = BTreeMap::new();
         let mut stack = vec![Visit::Down(0)];
-        let mut tmp = Vec::new();
         let mut flags = SQUASHFS_NO_XATTR | SQUASHFS_NO_FRAG;
         while let Some(n) = stack.pop() {
             match n {
                 Visit::Down(idx) => {
                     stack.push(Visit::Up(idx));
-                    if let vfs::Node::Dir(ref d) = *fs.node(idx) {
-                        for (name, v) in &d.entries {
+                    if let virtfs::Node::Dir(ref d) = *fs.node(idx).unwrap() {
+                        for (name, &v) in d.entries().rev() {
                             if name.len() > SQUASHFS_NAME_LEN {
                                 /* TODO: return error */
                             }
-                            tmp.push(*v);
-                        }
-                        while let Some(idx) = tmp.pop() {
-                            stack.push(Visit::Down(idx));
+                            stack.push(Visit::Down(v));
                         }
                     }
                 }
                 Visit::Up(idx) => {
                     if idx_to_ino[idx] == 0 {
-                        idx_to_ino[idx] = inodes.len();
-                        let node = fs.node(idx);
+                        idx_to_ino[idx] = inodes.len() + 1;
+                        let node = fs.node(idx).unwrap();
                         id_table.insert(node.uid(), 0);
                         id_table.insert(node.gid(), 0);
                         inodes.push(INode::new(node));
@@ -284,23 +286,17 @@ impl<'a> SquashFS<'a> {
             }
         }
 
-        if id_table.len() > u16::max_value() as usize {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "too many different ids"
-            ));
-        }
         for (i, v) in id_table.values_mut().enumerate() {
             *v = i as u16;
         }
 
         println!("id_table = {:?}", &id_table);
 
-        Ok(SquashFS {
+        MetaData {
             //comp: Compression::xz(1usize << 17),
             comp: Compression::zlib(),
             inodes,
-            idx_to_ino,
+            idx_to_ino: idx_to_ino.into_boxed_slice(),
             id_table,
             fpos: SQUASHFS_SUPERBLOCK_SIZE as u64,
             block_log: 17,
@@ -313,7 +309,7 @@ impl<'a> SquashFS<'a> {
             directory_table_start: -1,
             fragment_table_start: -1,
             lookup_table_start: -1,
-        })
+        }
     }
 
     fn write_inode_table(&mut self, file: &mut fs::File, enc: &mut Compress) -> io::Result<()> {
@@ -321,7 +317,7 @@ impl<'a> SquashFS<'a> {
 
         let mut entries: Vec<(usize, &[u8])> = Vec::new();
         let mut itable = MetaStream::<ToFile>::new(file);
-        let mut dtable: MetaStream<ToBuffer> = Default::default();
+        let mut dtable = MetaStream::<ToBuffer>::new();
 
         for i in 0..self.inodes.len() {
             self.inodes[i].setpos(itable.pos());
@@ -329,41 +325,43 @@ impl<'a> SquashFS<'a> {
                 INodeType::Dir { d } => {
                     let dpos = dtable.pos();
 
-                    for (name, idx) in &d.entries {
-                        entries.push((self.idx_to_ino[*idx], name));
+                    for (name, &idx) in d.entries() {
+                        entries.push((self.idx_to_ino[idx], name));
                     }
-                    let mut start = 0;
                     let mut end = 0;
                     let mut size = 0;
                     while end < entries.len() {
+                        let start = end;
                         let ino_base = entries[end].0;
-                        let start_block = self.inodes[ino_base].start_block;
+                        let start_block = self.inode(ino_base).start_block;
                         end += 1;
                         while end < entries.len() {
                             let ino = entries[end].0;
                             if ino - ino_base > i16::max_value() as usize {
                                 break;
                             }
-                            if start_block != self.inodes[ino].start_block {
+                            if start_block != self.inode(ino).start_block {
                                 break;
                             }
                             end += 1;
                         }
+                        /* write header */
                         dtable.u32(enc, (end - start - 1) as u32)?; /* count */
-                        dtable.u32(enc, start_block)?;
-                        dtable.u32(enc, ino_base as u32 + 1)?;
+                        dtable.u32(enc, start_block)?;              /* start block */
+                        dtable.u32(enc, ino_base as u32)?;          /* base ino */
                         /*
                         println!("header: count={} start_block={} ino_base={}",
-                                 (end - start - 1) as u32, start_block, ino_base as u32 + 1);
+                                 (end - start - 1) as u32, start_block, ino_base as u32);
                         */
                         size += 12;
+                        /* write entries */
                         for &(ino, name) in &entries[start..end] {
-                            let node = &self.inodes[ino];
-                            dtable.u16(enc, node.offset)?; /* offset */
+                            let node = self.inode(ino);
+                            dtable.u16(enc, node.offset)?;             /* offset */
                             dtable.i16(enc, (ino - ino_base) as i16)?; /* ino_add */
-                            dtable.u16(enc, node.tmark())?;
-                            dtable.u16(enc, (name.len() - 1) as u16)?; /* size */
-                            dtable.write(enc, name)?;
+                            dtable.u16(enc, node.tmark())?;            /* type mark */
+                            dtable.u16(enc, (name.len() - 1) as u16)?; /* name size */
+                            dtable.write(enc, name)?;                  /* name */
                             /*
                             println!("entry: offset={} ino_add={} tmark={} size={}, {}",
                                      node.offset, (ino - ino_base) as i16, node.tmark(),
@@ -372,7 +370,6 @@ impl<'a> SquashFS<'a> {
                             */
                             size += 8 + name.len();
                         }
-                        start = end;
                     }
                     entries.clear();
 
@@ -384,21 +381,21 @@ impl<'a> SquashFS<'a> {
                     itable.u32(enc, (i + 1) as u32)?;
 
                     itable.u32(enc, dpos.0)?; /* start_block */
-                    itable.u32(enc, d.nlink)?;
+                    itable.u32(enc, d.nlink() as u32)?;
                     itable.u16(enc, size as u16 + 3)?;
                     itable.u16(enc, dpos.1)?; /* offset */
                     let parent = if i == self.inodes.len() - 1 {
                         self.inodes.len() as u32 + 1
                     } else {
-                        self.idx_to_ino[d.parent] as u32 + 1
+                        self.idx_to_ino[d.parent()] as u32
                     };
                     itable.u32(enc, parent)?;
-                    //itable.u32(enc, self.idx_to_ino[d.parent] as u32 + 1)?;
+                    //itable.u32(enc, self.idx_to_ino[d.parent] as u32)?;
                 },
                 INodeType::File { f, start_block, fragment, offset, file_size, ref block_list } => {
                     if start_block <= u64::from(u32::max_value())
                         && file_size <= u64::from(u32::max_value())
-                            && f.nlink == 1 {
+                            && f.nlink() == 1 {
                         itable.u16(enc, SQUASHFS_FILE_TYPE)?;
                         itable.u16(enc, f.mode)?;
                         itable.u16(enc, self.id_table[&f.uid])?;
@@ -410,8 +407,8 @@ impl<'a> SquashFS<'a> {
                         itable.u32(enc, fragment)?;
                         itable.u32(enc, offset)?;
                         itable.u32(enc, file_size as u32)?;
-                        for block in block_list {
-                            itable.u32(enc, *block)?;
+                        for &block in block_list {
+                            itable.u32(enc, block)?;
                         }
                     } else {
                         itable.u16(enc, SQUASHFS_LREG_TYPE)?;
@@ -424,12 +421,12 @@ impl<'a> SquashFS<'a> {
                         itable.i64(enc, start_block as i64)?;
                         itable.i64(enc, file_size as i64)?;
                         itable.i64(enc, 0)?; /* sparse */
-                        itable.u32(enc, f.nlink)?;
+                        itable.u32(enc, f.nlink() as u32)?;
                         itable.u32(enc, fragment)?;
                         itable.u32(enc, offset)?;
                         itable.u32(enc, SQUASHFS_INVALID_XATTR)?;
-                        for block in block_list {
-                            itable.u32(enc, *block)?;
+                        for &block in block_list {
+                            itable.u32(enc, block)?;
                         }
                     }
                 },
@@ -441,9 +438,10 @@ impl<'a> SquashFS<'a> {
                     itable.i32(enc, 0)?; /* mtime */
                     itable.u32(enc, (i + 1) as u32)?;
 
-                    itable.u32(enc, l.nlink)?;
-                    itable.u32(enc, l.tgt.len() as u32)?;
-                    itable.write(enc, &l.tgt)?;
+                    let tgt = l.target();
+                    itable.u32(enc, l.nlink() as u32)?;
+                    itable.u32(enc, tgt.len() as u32)?;
+                    itable.write(enc, tgt)?;
                 },
             }
         }
@@ -462,6 +460,10 @@ impl<'a> SquashFS<'a> {
         };
 
         Ok(())
+    }
+
+    fn inode(&self, ino: usize) -> &INode<T> {
+        &self.inodes[ino - 1]
     }
 
     fn write_fragment_table(&mut self, _file: &mut fs::File) -> io::Result<()> {
@@ -488,11 +490,11 @@ impl<'a> SquashFS<'a> {
 
         {
             let mut ms = MetaStream::<ToFile>::new(file);
-            for v in self.id_table.keys() {
+            for &v in self.id_table.keys() {
                 if ms.offset == 0 {
                     index.push(self.fpos + ms.out.pos() as u64);
                 }
-                ms.u32(enc, *v)?;
+                ms.u32(enc, v)?;
             }
             ms.flush(enc)?;
             self.fpos += ms.out.pos() as u64;
@@ -541,23 +543,32 @@ impl<'a> SquashFS<'a> {
         LE::write_i64(&mut buf[88..], self.lookup_table_start);
         file.write_all(&buf)
     }
+}
 
-    pub fn write(mut self, file: &mut fs::File, offset: u64) -> io::Result<()> {
-        let mut enc = self.comp.encoder(1usize << self.block_log)?;
+pub fn write<T : FileData>(fs: &virtfs::VirtFS<T>, file: &mut fs::File, offset: u64) -> io::Result<()> {
+    let mut md = MetaData::new(fs);
 
-        file.seek(io::SeekFrom::Start(offset + self.fpos))?;
-        self.write_inode_table(file, enc.deref_mut())?;
-        self.write_fragment_table(file)?;
-        self.write_id_table(file, enc.deref_mut())?;
-
-        let tail = self.fpos % 4096;
-        if tail != 0 {
-            let aligned_end = self.fpos - tail + 4095;
-            file.seek(io::SeekFrom::Start(offset + aligned_end))?;
-            file.write_all(b"\0")?;
-        }
-
-        file.seek(io::SeekFrom::Start(offset))?;
-        self.write_superblock(file)
+    if md.id_table.len() > u16::max_value() as usize {
+        return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "too many different ids"
+        ));
     }
+
+    let mut enc = md.comp.encoder(1usize << md.block_log)?;
+
+    file.seek(io::SeekFrom::Start(offset + md.fpos))?;
+    md.write_inode_table(file, enc.deref_mut())?;
+    md.write_fragment_table(file)?;
+    md.write_id_table(file, enc.deref_mut())?;
+
+    let tail = md.fpos % 4096;
+    if tail != 0 {
+        let aligned_end = md.fpos - tail + 4095;
+        file.seek(io::SeekFrom::Start(offset + aligned_end))?;
+        file.write_all(b"\0")?;
+    }
+
+    file.seek(io::SeekFrom::Start(offset))?;
+    md.write_superblock(file)
 }

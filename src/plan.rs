@@ -5,26 +5,9 @@ use std::fs::File;
 
 use super::yaml::{YamlLoader,Yaml};
 
-use squashfs::virtfs::FS;
+use virtfs::VirtFS;
 
-fn mkdir(fs: &mut FS, entry: &Yaml) -> io::Result<()> {
-    let dest = match entry["dest"] {
-        Yaml::String(ref d) => d,
-        Yaml::BadValue => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "no dest found"
-            ));
-        }
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "dest should be a string"
-            ));
-        }
-    };
-
-    let n = fs.mkdir(dest.as_bytes())?;
+fn set_attributes<T>(node: &mut virtfs::Node<T>, entry: &Yaml) -> io::Result<()> {
     match entry["owner"] {
         Yaml::Integer(v) => {
             if v < 0 || v > i64::from(<u32>::max_value()) {
@@ -33,7 +16,7 @@ fn mkdir(fs: &mut FS, entry: &Yaml) -> io::Result<()> {
                     "uid out of range"
                 ));
             }
-            fs.setuid(n, v as u32)?;
+            node.chown(v as u32);
         }
         Yaml::BadValue => {}
         _ => {
@@ -51,7 +34,7 @@ fn mkdir(fs: &mut FS, entry: &Yaml) -> io::Result<()> {
                     "gid out of range"
                 ));
             }
-            fs.setgid(n, v as u32)?;
+            node.chgrp(v as u32);
         }
         Yaml::BadValue => {}
         _ => {
@@ -69,7 +52,7 @@ fn mkdir(fs: &mut FS, entry: &Yaml) -> io::Result<()> {
                     "uid out of range"
                 ));
             }
-            fs.chmod(n, v as u16)?;
+            node.chmod(v as u16);
         }
         Yaml::BadValue => {}
         _ => {
@@ -82,7 +65,28 @@ fn mkdir(fs: &mut FS, entry: &Yaml) -> io::Result<()> {
     Ok(())
 }
 
-fn symlink(fs: &mut FS, entry: &Yaml) -> io::Result<()> {
+fn mkdir<T>(fs: &mut VirtFS<T>, entry: &Yaml) -> io::Result<()> {
+    let dest = match entry["dest"] {
+        Yaml::String(ref d) => d,
+        Yaml::BadValue => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "no dest found"
+            ));
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "dest should be a string"
+            ));
+        }
+    };
+    let n = fs.mkdir(dest.as_bytes())?;
+    set_attributes(n, entry)?;
+    Ok(())
+}
+
+fn symlink<T>(fs: &mut VirtFS<T>, entry: &Yaml) -> io::Result<()> {
     let dest = match entry["dest"] {
         Yaml::String(ref d) => d,
         Yaml::BadValue => {
@@ -113,7 +117,8 @@ fn symlink(fs: &mut FS, entry: &Yaml) -> io::Result<()> {
             ));
         }
     };
-    fs.symlink(tgt.as_bytes(), dest.as_bytes())?;
+    let n = fs.symlink(dest.as_bytes(), tgt.as_bytes())?;
+    set_attributes(n, entry)?;
     Ok(())
 }
 
@@ -130,7 +135,7 @@ pub fn parsefile<P: AsRef<Path>>(path: P) -> io::Result<Vec<Yaml>> {
     }
 }
 
-pub fn add(fs: &mut FS, doc: &Yaml) -> io::Result<()> {
+pub fn add<T>(fs: &mut VirtFS<T>, doc: &Yaml) -> io::Result<()> {
     let plan = match doc["plan"] {
         Yaml::Array(ref a) => a,
         Yaml::BadValue => {
