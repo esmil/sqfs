@@ -112,91 +112,44 @@ impl<'a, T> INode<'a, T> {
     }
 }
 
-trait Push {
-    fn push(&mut self, data: &[u8]) -> io::Result<()>;
-    fn pos(&self) -> usize;
-}
-
-struct ToFile<'a> {
-    file: &'a mut fs::File,
-    pos: usize,
-}
-
-impl<'a> Push for ToFile<'a> {
-    fn push(&mut self, data: &[u8]) -> io::Result<()> {
-        self.file.write_all(data)?;
-        self.pos += data.len();
-        Ok(())
-    }
-
-    fn pos(&self) -> usize {
-        self.pos
-    }
-}
-
-struct ToBuffer(Vec<u8>);
-
-impl Push for ToBuffer {
-    fn push(&mut self, data: &[u8]) -> io::Result<()> {
-        self.0.extend_from_slice(data);
-        Ok(())
-    }
-
-    fn pos(&self) -> usize {
-        self.0.len()
-    }
-}
-
-struct MetaStream<T : Push> {
-    out: T,
+struct MetaStream {
+    out: Vec<u8>,
     offset: usize,
     buf: [u8; SQUASHFS_METADATA_SIZE + 8],
 }
 
-impl<'a> MetaStream<ToFile<'a>> {
-    fn new(file: &mut fs::File) -> MetaStream<ToFile> {
-        MetaStream {
-            out: ToFile { file, pos: 0 },
-            offset: 0,
-            buf: unsafe { mem::uninitialized() },
-        }
-    }
-}
-
-impl Default for MetaStream<ToBuffer> {
+impl Default for MetaStream {
     fn default() -> Self {
         MetaStream {
-            out: ToBuffer(Vec::new()),
+            out: Vec::new(),
             offset: 0,
             buf: unsafe { mem::uninitialized() },
         }
     }
 }
 
-impl MetaStream<ToBuffer> {
+impl MetaStream {
     fn new() -> Self {
         Default::default()
     }
-}
 
-impl<T : Push> MetaStream<T> {
     fn pos(&self) -> (u32, u16) {
-        (self.out.pos() as u32, self.offset as u16)
+        (self.out.len() as u32, self.offset as u16)
     }
 
-    fn flush(&mut self, enc: &mut Compress) -> io::Result<()> {
+    fn flush(&mut self, enc: &mut Compress) {
         let len = cmp::min(self.offset, SQUASHFS_METADATA_SIZE);
         let mut header: [u8; 2] = unsafe { mem::uninitialized() };
         match enc.compress(&mut self.buf[..len], SQUASHFS_METADATA_SIZE) {
             Ok(out) if out.len() < len => {
                 LE::write_u16(&mut header, out.len() as u16);
-                self.out.push(&header)?;
-                self.out.push(out)?;
+                self.out.extend_from_slice(&header);
+                self.out.extend_from_slice(out);
             }
             _ => {
                 LE::write_u16(&mut header, len as u16 | 0x8000u16);
-                self.out.push(&header)?;
-                self.out.push(&self.buf[..len])?;
+                self.out.extend_from_slice(&header);
+                self.out.extend_from_slice(&self.buf[..len]);
             }
         };
         let rest = self.offset - len;
@@ -205,51 +158,49 @@ impl<T : Push> MetaStream<T> {
             head[..rest].copy_from_slice(tail);
         }
         self.offset = rest;
-        Ok(())
     }
 
-    fn advance(&mut self, enc: &mut Compress, v: usize) -> io::Result<()> {
+    fn advance(&mut self, enc: &mut Compress, v: usize) {
         self.offset += v;
         if self.offset < SQUASHFS_METADATA_SIZE {
-            return Ok(());
+            return;
         }
         self.flush(enc)
     }
 
 
-    fn i16(&mut self, enc: &mut Compress, v: i16) -> io::Result<()> {
+    fn i16(&mut self, enc: &mut Compress, v: i16) {
         LE::write_i16(&mut self.buf[self.offset..], v);
         self.advance(enc, 2)
     }
 
-    fn u16(&mut self, enc: &mut Compress, v: u16) -> io::Result<()> {
+    fn u16(&mut self, enc: &mut Compress, v: u16) {
         LE::write_u16(&mut self.buf[self.offset..], v);
         self.advance(enc, 2)
     }
 
-    fn i32(&mut self, enc: &mut Compress, v: i32) -> io::Result<()> {
+    fn i32(&mut self, enc: &mut Compress, v: i32) {
         LE::write_i32(&mut self.buf[self.offset..], v);
         self.advance(enc, 4)
     }
 
-    fn u32(&mut self, enc: &mut Compress, v: u32) -> io::Result<()> {
+    fn u32(&mut self, enc: &mut Compress, v: u32) {
         LE::write_u32(&mut self.buf[self.offset..], v);
         self.advance(enc, 4)
     }
 
-    fn i64(&mut self, enc: &mut Compress, v: i64) -> io::Result<()> {
+    fn i64(&mut self, enc: &mut Compress, v: i64) {
         LE::write_i64(&mut self.buf[self.offset..], v);
         self.advance(enc, 8)
     }
 
-    fn write(&mut self, enc: &mut Compress, mut data: &[u8]) -> io::Result<()> {
+    fn write(&mut self, enc: &mut Compress, mut data: &[u8]) {
         while !data.is_empty() {
             let chunk = cmp::min(data.len(), SQUASHFS_METADATA_SIZE - self.offset);
             self.buf[(self.offset)..(self.offset + chunk)].copy_from_slice(data);
-            self.advance(enc, chunk)?;
+            self.advance(enc, chunk);
             data = &data[chunk..];
         }
-        Ok(())
     }
 }
 
@@ -390,11 +341,9 @@ impl<'a, T : FileData> MetaData<'a, T> {
     }
 
     fn write_inode_table(&mut self, file: &mut fs::File, enc: &mut Compress) -> io::Result<()> {
-        self.inode_table_start = self.fpos as i64;
-
         let mut entries: Vec<(usize, &[u8])> = Vec::new();
-        let mut itable = MetaStream::<ToFile>::new(file);
-        let mut dtable = MetaStream::<ToBuffer>::new();
+        let mut itable = MetaStream::new();
+        let mut dtable = MetaStream::new();
 
         for i in 0..self.inodes.len() {
             self.inodes[i].setpos(itable.pos());
@@ -423,145 +372,147 @@ impl<'a, T : FileData> MetaData<'a, T> {
                             end += 1;
                         }
                         /* write header */
-                        dtable.u32(enc, (end - start - 1) as u32)?; /* count */
-                        dtable.u32(enc, start_block)?;              /* start block */
-                        dtable.u32(enc, ino_base as u32)?;          /* base ino */
+                        dtable.u32(enc, (end - start - 1) as u32); /* count */
+                        dtable.u32(enc, start_block);              /* start block */
+                        dtable.u32(enc, ino_base as u32);          /* base ino */
                         size += 12;
 
                         /* write entries */
                         for &(ino, name) in &entries[start..end] {
                             let node = self.inode(ino);
-                            dtable.u16(enc, node.offset)?;             /* offset */
-                            dtable.i16(enc, (ino - ino_base) as i16)?; /* ino_add */
-                            dtable.u16(enc, node.tmark())?;            /* type mark */
-                            dtable.u16(enc, (name.len() - 1) as u16)?; /* name size */
-                            dtable.write(enc, name)?;                  /* name */
+                            dtable.u16(enc, node.offset);             /* offset */
+                            dtable.i16(enc, (ino - ino_base) as i16); /* ino_add */
+                            dtable.u16(enc, node.tmark());            /* type mark */
+                            dtable.u16(enc, (name.len() - 1) as u16); /* name size */
+                            dtable.write(enc, name);                  /* name */
                             size += 8 + name.len();
                         }
                     }
                     entries.clear();
 
-                    itable.u16(enc, SQUASHFS_DIR_TYPE)?;
-                    itable.u16(enc, d.mode)?;
-                    itable.u16(enc, self.id_table[&d.uid])?;
-                    itable.u16(enc, self.id_table[&d.gid])?;
-                    itable.i32(enc, to_timestamp(d.mtime))?;
-                    itable.u32(enc, (i + 1) as u32)?;
+                    itable.u16(enc, SQUASHFS_DIR_TYPE);
+                    itable.u16(enc, d.mode);
+                    itable.u16(enc, self.id_table[&d.uid]);
+                    itable.u16(enc, self.id_table[&d.gid]);
+                    itable.i32(enc, to_timestamp(d.mtime));
+                    itable.u32(enc, (i + 1) as u32);
 
-                    itable.u32(enc, dpos.0)?; /* start_block */
-                    itable.u32(enc, d.nlink() as u32)?;
-                    itable.u16(enc, size as u16 + 3)?;
-                    itable.u16(enc, dpos.1)?; /* offset */
+                    itable.u32(enc, dpos.0); /* start_block */
+                    itable.u32(enc, d.nlink() as u32);
+                    itable.u16(enc, size as u16 + 3);
+                    itable.u16(enc, dpos.1); /* offset */
                     let parent = if i == self.inodes.len() - 1 {
                         self.inodes.len() as u32 + 1
                     } else {
                         self.idx_to_ino[d.parent()] as u32
                     };
-                    itable.u32(enc, parent)?;
+                    itable.u32(enc, parent);
                 },
                 INodeType::File { f, start_block, fragment, offset, file_size, ref block_list } => {
                     if start_block <= u64::from(u32::max_value())
                         && file_size <= u64::from(u32::max_value())
                             && f.nlink() == 1 {
-                        itable.u16(enc, SQUASHFS_FILE_TYPE)?;
-                        itable.u16(enc, f.mode)?;
-                        itable.u16(enc, self.id_table[&f.uid])?;
-                        itable.u16(enc, self.id_table[&f.gid])?;
-                        itable.i32(enc, to_timestamp(f.mtime))?;
-                        itable.u32(enc, (i + 1) as u32)?;
+                        itable.u16(enc, SQUASHFS_FILE_TYPE);
+                        itable.u16(enc, f.mode);
+                        itable.u16(enc, self.id_table[&f.uid]);
+                        itable.u16(enc, self.id_table[&f.gid]);
+                        itable.i32(enc, to_timestamp(f.mtime));
+                        itable.u32(enc, (i + 1) as u32);
 
-                        itable.u32(enc, start_block as u32)?;
-                        itable.u32(enc, fragment)?;
-                        itable.u32(enc, offset)?;
-                        itable.u32(enc, file_size as u32)?;
+                        itable.u32(enc, start_block as u32);
+                        itable.u32(enc, fragment);
+                        itable.u32(enc, offset);
+                        itable.u32(enc, file_size as u32);
                         for &block in block_list {
-                            itable.u32(enc, block)?;
+                            itable.u32(enc, block);
                         }
                     } else {
-                        itable.u16(enc, SQUASHFS_LREG_TYPE)?;
-                        itable.u16(enc, f.mode)?;
-                        itable.u16(enc, self.id_table[&f.uid])?;
-                        itable.u16(enc, self.id_table[&f.gid])?;
-                        itable.i32(enc, to_timestamp(f.mtime))?;
-                        itable.u32(enc, (i + 1) as u32)?;
+                        itable.u16(enc, SQUASHFS_LREG_TYPE);
+                        itable.u16(enc, f.mode);
+                        itable.u16(enc, self.id_table[&f.uid]);
+                        itable.u16(enc, self.id_table[&f.gid]);
+                        itable.i32(enc, to_timestamp(f.mtime));
+                        itable.u32(enc, (i + 1) as u32);
 
-                        itable.i64(enc, start_block as i64)?;
-                        itable.i64(enc, file_size as i64)?;
-                        itable.i64(enc, 0)?; /* sparse */
-                        itable.u32(enc, f.nlink() as u32)?;
-                        itable.u32(enc, fragment)?;
-                        itable.u32(enc, offset)?;
-                        itable.u32(enc, SQUASHFS_INVALID_XATTR)?;
+                        itable.i64(enc, start_block as i64);
+                        itable.i64(enc, file_size as i64);
+                        itable.i64(enc, 0); /* sparse */
+                        itable.u32(enc, f.nlink() as u32);
+                        itable.u32(enc, fragment);
+                        itable.u32(enc, offset);
+                        itable.u32(enc, SQUASHFS_INVALID_XATTR);
                         for &block in block_list {
-                            itable.u32(enc, block)?;
+                            itable.u32(enc, block);
                         }
                     }
                 },
                 INodeType::Symlink { l } => {
-                    itable.u16(enc, SQUASHFS_SYMLINK_TYPE)?;
-                    itable.u16(enc, l.mode)?;
-                    itable.u16(enc, self.id_table[&l.uid])?;
-                    itable.u16(enc, self.id_table[&l.gid])?;
-                    itable.i32(enc, to_timestamp(l.mtime))?;
-                    itable.u32(enc, (i + 1) as u32)?;
+                    itable.u16(enc, SQUASHFS_SYMLINK_TYPE);
+                    itable.u16(enc, l.mode);
+                    itable.u16(enc, self.id_table[&l.uid]);
+                    itable.u16(enc, self.id_table[&l.gid]);
+                    itable.i32(enc, to_timestamp(l.mtime));
+                    itable.u32(enc, (i + 1) as u32);
 
                     let tgt = l.target();
-                    itable.u32(enc, l.nlink() as u32)?;
-                    itable.u32(enc, tgt.len() as u32)?;
-                    itable.write(enc, tgt)?;
+                    itable.u32(enc, l.nlink() as u32);
+                    itable.u32(enc, tgt.len() as u32);
+                    itable.write(enc, tgt);
                 },
                 INodeType::BlockDev { b } => {
-                    itable.u16(enc, SQUASHFS_BLKDEV_TYPE)?;
-                    itable.u16(enc, b.mode)?;
-                    itable.u16(enc, self.id_table[&b.uid])?;
-                    itable.u16(enc, self.id_table[&b.gid])?;
-                    itable.i32(enc, to_timestamp(b.mtime))?;
-                    itable.u32(enc, (i + 1) as u32)?;
+                    itable.u16(enc, SQUASHFS_BLKDEV_TYPE);
+                    itable.u16(enc, b.mode);
+                    itable.u16(enc, self.id_table[&b.uid]);
+                    itable.u16(enc, self.id_table[&b.gid]);
+                    itable.i32(enc, to_timestamp(b.mtime));
+                    itable.u32(enc, (i + 1) as u32);
 
-                    itable.u32(enc, b.nlink() as u32)?;
-                    itable.u32(enc, b.rdev)?;
+                    itable.u32(enc, b.nlink() as u32);
+                    itable.u32(enc, b.rdev);
                 },
                 INodeType::CharDev { c } => {
-                    itable.u16(enc, SQUASHFS_CHRDEV_TYPE)?;
-                    itable.u16(enc, c.mode)?;
-                    itable.u16(enc, self.id_table[&c.uid])?;
-                    itable.u16(enc, self.id_table[&c.gid])?;
-                    itable.i32(enc, to_timestamp(c.mtime))?;
-                    itable.u32(enc, (i + 1) as u32)?;
+                    itable.u16(enc, SQUASHFS_CHRDEV_TYPE);
+                    itable.u16(enc, c.mode);
+                    itable.u16(enc, self.id_table[&c.uid]);
+                    itable.u16(enc, self.id_table[&c.gid]);
+                    itable.i32(enc, to_timestamp(c.mtime));
+                    itable.u32(enc, (i + 1) as u32);
 
-                    itable.u32(enc, c.nlink() as u32)?;
-                    itable.u32(enc, c.rdev)?;
+                    itable.u32(enc, c.nlink() as u32);
+                    itable.u32(enc, c.rdev);
                 },
                 INodeType::Fifo { p } => {
-                    itable.u16(enc, SQUASHFS_FIFO_TYPE)?;
-                    itable.u16(enc, p.mode)?;
-                    itable.u16(enc, self.id_table[&p.uid])?;
-                    itable.u16(enc, self.id_table[&p.gid])?;
-                    itable.i32(enc, to_timestamp(p.mtime))?;
-                    itable.u32(enc, (i + 1) as u32)?;
+                    itable.u16(enc, SQUASHFS_FIFO_TYPE);
+                    itable.u16(enc, p.mode);
+                    itable.u16(enc, self.id_table[&p.uid]);
+                    itable.u16(enc, self.id_table[&p.gid]);
+                    itable.i32(enc, to_timestamp(p.mtime));
+                    itable.u32(enc, (i + 1) as u32);
 
-                    itable.u32(enc, p.nlink() as u32)?;
+                    itable.u32(enc, p.nlink() as u32);
                 },
                 INodeType::Socket { s } => {
-                    itable.u16(enc, SQUASHFS_SOCKET_TYPE)?;
-                    itable.u16(enc, s.mode)?;
-                    itable.u16(enc, self.id_table[&s.uid])?;
-                    itable.u16(enc, self.id_table[&s.gid])?;
-                    itable.i32(enc, to_timestamp(s.mtime))?;
-                    itable.u32(enc, (i + 1) as u32)?;
+                    itable.u16(enc, SQUASHFS_SOCKET_TYPE);
+                    itable.u16(enc, s.mode);
+                    itable.u16(enc, self.id_table[&s.uid]);
+                    itable.u16(enc, self.id_table[&s.gid]);
+                    itable.i32(enc, to_timestamp(s.mtime));
+                    itable.u32(enc, (i + 1) as u32);
 
-                    itable.u32(enc, s.nlink() as u32)?;
+                    itable.u32(enc, s.nlink() as u32);
                 },
             }
         }
 
-        itable.flush(enc)?;
-        self.fpos += itable.out.pos() as u64;
+        self.inode_table_start = self.fpos as i64;
+        itable.flush(enc);
+        file.write_all(&itable.out)?;
+        self.fpos += itable.out.len() as u64;
 
         self.directory_table_start = self.fpos as i64;
-        dtable.flush(enc)?;
-        itable.out.file.write_all(&dtable.out.0)?;
-        self.fpos += dtable.out.pos() as u64;
+        dtable.flush(enc);
+        file.write_all(&dtable.out)?;
+        self.fpos += dtable.out.len() as u64;
 
         self.root_inode = {
             let root = &self.inodes[self.inodes.len() - 1];
@@ -598,15 +549,16 @@ impl<'a, T : FileData> MetaData<'a, T> {
         };
 
         {
-            let mut ms = MetaStream::<ToFile>::new(file);
+            let mut ms = MetaStream::new();
             for &v in self.id_table.keys() {
                 if ms.offset == 0 {
-                    index.push(self.fpos + ms.out.pos() as u64);
+                    index.push(self.fpos + ms.out.len() as u64);
                 }
-                ms.u32(enc, v)?;
+                ms.u32(enc, v);
             }
-            ms.flush(enc)?;
-            self.fpos += ms.out.pos() as u64;
+            ms.flush(enc);
+            file.write_all(&ms.out)?;
+            self.fpos += ms.out.len() as u64;
         }
 
         let mut buf: [u8; 256] = unsafe { mem::uninitialized() };
