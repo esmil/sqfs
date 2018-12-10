@@ -312,6 +312,64 @@ impl<'a, T : FileData> MetaData<'a, T> {
         }
     }
 
+    fn write_file(&mut self, file: &mut fs::File, enc: &mut Compress, f: &'a virtfs::File<T>, buf: &mut [u8]) -> io::Result<INodeType<'a, T>> {
+        let blocksize = buf.len();
+        let start_block = self.fpos;
+        let mut file_size = 0;
+        let mut r = f.data.open()?;
+        let mut block_list = Vec::new();
+
+        loop {
+            let mut len = 0;
+            loop {
+                let r = r.read(&mut buf[len..])?;
+                len += r;
+                if r == 0 || len == blocksize {
+                    break;
+                }
+            }
+            file_size += len as u64;
+            match enc.compress(&mut buf[..len], blocksize) {
+                Ok(out) if out.len() < len => {
+                    file.write_all(out)?;
+                    self.fpos += out.len() as u64;
+                    block_list.push(out.len() as u32);
+                }
+                _ => { /* write it uncompressed */
+                    file.write_all(&buf[..len])?;
+                    self.fpos += len as u64;
+                    block_list.push(len as u32 | 0x100_0000);
+                }
+            }
+            if len < blocksize {
+                break;
+            }
+        }
+
+        Ok(INodeType::File {
+            f,
+            start_block,
+            fragment: SQUASHFS_INVALID_FRAG,
+            offset: 0,
+            file_size,
+            block_list,
+        })
+    }
+
+    fn write_file_data(&mut self, file: &mut fs::File, enc: &mut Compress) -> io::Result<()> {
+        let blocksize = 1usize << self.block_log;
+        let mut buf = Vec::with_capacity(blocksize);
+        unsafe { buf.set_len(blocksize) };
+        for i in 0..self.inodes.len() {
+            let f = match self.inodes[i].typ {
+                INodeType::File { f, .. } => f,
+                _ => continue,
+            };
+            self.inodes[i].typ = self.write_file(file, enc, f, &mut buf)?;
+        }
+        Ok(())
+    }
+
     fn write_inode_table(&mut self, file: &mut fs::File, enc: &mut Compress) -> io::Result<()> {
         self.inode_table_start = self.fpos as i64;
 
@@ -558,6 +616,7 @@ pub fn write<T : FileData>(fs: &virtfs::VirtFS<T>, file: &mut fs::File, offset: 
     let mut enc = md.comp.encoder(1usize << md.block_log)?;
 
     file.seek(io::SeekFrom::Start(offset + md.fpos))?;
+    md.write_file_data(file, enc.deref_mut())?;
     md.write_inode_table(file, enc.deref_mut())?;
     md.write_fragment_table(file)?;
     md.write_id_table(file, enc.deref_mut())?;

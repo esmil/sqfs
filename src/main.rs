@@ -252,6 +252,10 @@ fn plan(path: &OsStr, _m: &ArgMatches) -> io::Result<()> {
     let mut fs = VirtFS::<FileData>::new();
     plan::add(&mut fs, &res[0])?;
 
+    fs.newfile(b"/file", FileData::Static(b"xyz\n"))?;
+    fs.newfile(b"/Makefile", FileData::Path(PathBuf::from("Makefile")))?;
+    fs.hardlink(b"/boot/Makefile", b"/Makefile")?;
+
     print!("{}", fs);
     println!("validate = {}", fs.validate());
 
