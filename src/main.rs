@@ -255,9 +255,12 @@ fn plan(path: &OsStr, _m: &ArgMatches) -> io::Result<()> {
     fs.newfile(b"/file", FileData::Static(b"xyz\n"))?;
     fs.newfile(b"/Makefile", FileData::Path(PathBuf::from("Makefile")))?;
     fs.hardlink(b"/boot/Makefile", b"/Makefile")?;
+    fs.mkdir(b"/dev")?;
+    fs.blockdev(b"/dev/loop0", 7 << 8 | 0)?.chmod(0o660);
+    fs.chardev(b"/dev/null", 1 << 8 | 3)?.chmod(0o666);
+    fs.socket(b"/dev/log")?.chmod(0o666);
 
     print!("{}", fs);
-    println!("validate = {}", fs.validate());
 
     let mut file = fs::OpenOptions::new()
         .write(true)
