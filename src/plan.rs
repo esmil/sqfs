@@ -1,9 +1,7 @@
 use std::io;
-use std::io::Read;
 use std::path::Path;
-use std::fs::File;
 
-use super::yaml::{YamlLoader,Yaml};
+use super::yaml::Yaml;
 
 use virtfs::VirtFS;
 
@@ -122,11 +120,42 @@ fn symlink<T>(fs: &mut VirtFS<T>, entry: &Yaml) -> io::Result<()> {
     Ok(())
 }
 
-pub fn parsefile<P: AsRef<Path>>(path: P) -> io::Result<Vec<Yaml>> {
-    let mut data = String::new();
-    File::open(path)?.read_to_string(&mut data)?;
+/*
+fn mknod<T>(fs: &mut VirtFS<T>, entry: &Yaml) -> io::Result<()> {
+    let dest = match entry["dest"] {
+        Yaml::String(ref d) => d,
+        Yaml::BadValue => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "no dest found"
+            ));
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "dest should be a string"
+            ));
+        }
+    };
+    let major = match entry["major"] {
+        Yaml::Integer(n) if n < 256 => n,
+        Yaml::BadValue => 0,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "major should be an integer < 256"
+            ));
+        }
+    };
+    let n = fs.symlink(dest.as_bytes(), tgt.as_bytes())?;
+    set_attributes(n, entry)?;
+    Ok(())
+}
+*/
 
-    match YamlLoader::load_from_str(&data) {
+pub fn parsefile<P: AsRef<Path>>(path: P) -> io::Result<Vec<Yaml>> {
+    let data = std::fs::read_to_string(path)?;
+    match super::yaml::load_from_str(&data) {
         Ok(r) => Ok(r),
         Err(e) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -153,7 +182,7 @@ pub fn add<T>(fs: &mut VirtFS<T>, doc: &Yaml) -> io::Result<()> {
     };
 
     for (i, v) in plan.iter().enumerate() {
-        let action = match v["action"] {
+        let action = match v["do"] {
             Yaml::String(ref p) => p,
             Yaml::BadValue => {
                 return Err(io::Error::new(

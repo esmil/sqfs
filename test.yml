@@ -11,66 +11,66 @@ vars:
   sshd:
     PasswordAuthentication: no
 plan:
-- action: symlink
+- do: symlink
   dest: 'bin'
   target: 'usr/bin'
-- action: mkdir
+- do: mkdir
   dest: 'boot'
-- action: mkdir
+- do: mkdir
   dest: 'etc'
-- action: mkdir
+- do: mkdir
   dest: 'home'
-- action: symlink
+- do: symlink
   dest: 'lib'
   target: 'usr/lib'
-- action: mkdir
+- do: mkdir
   dest: 'proc'
-- action: mkdir
+- do: mkdir
   dest: 'root'
-- action: mkdir
+- do: mkdir
   dest: 'run'
-- action: symlink
+- do: symlink
   dest: 'sbin'
   target: 'usr/bin'
-- action: mkdir
+- do: mkdir
   dest: 'sys'
-- action: mkdir
+- do: mkdir
   dest: 'usr'
-- action: mkdir
+- do: mkdir
   dest: 'usr/bin'
-- action: mkdir
+- do: mkdir
   dest: 'usr/lib'
-- action: symlink
+- do: symlink
   dest: 'usr/sbin'
   target: 'bin'
-- action: mkdir
+- do: mkdir
   dest: 'var'
 
-- action: mkdir
+- do: mkdir
   dest: home/esmil
   owner: 1000
   group: 100
   mode: 0700
   recursive: true
 
-- action: symlink
+- do: symlink
   dest: 'usr/bin/sh'
   target: 'bash'
 
-#- action: mkdir
+#- do: mkdir
 #  dest: etc
 #  overwrite: true
 
-#- action: template
+#- do: template
 #  dest: /etc/ssh/sshd_config
 #  src: sshd_config.template
-#- action: file
+#- do: file
 #  dest: /etc/ssh/sshd_config
 #  overwrite: yes
-#- action: chmod
+#- do: chmod
 #  dest: etc/ssh/sshd_config
 #  mode: 0600
-#- action: file
+#- do: file
 #  dest: /etc/hostname
 #  #content: "myhost\n"
 #  content: !!binary YWJjCg==
