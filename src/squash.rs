@@ -299,16 +299,20 @@ impl<'a, T : FileData> MetaData<'a, T> {
                 }
             }
             file_size += len as u64;
-            match enc.compress(&mut buf[..len], blocksize) {
-                Ok(out) if out.len() < len => {
-                    file.write_all(out)?;
-                    self.fpos += out.len() as u64;
-                    block_list.push(out.len() as u32);
-                }
-                _ => { /* write it uncompressed */
-                    file.write_all(&buf[..len])?;
-                    self.fpos += len as u64;
-                    block_list.push(len as u32 | 0x100_0000);
+            if buf[..len].iter().all(|&x| x == 0) {
+                block_list.push(0);
+            } else {
+                match enc.compress(&mut buf[..len], blocksize) {
+                    Ok(out) if out.len() < len => {
+                        file.write_all(out)?;
+                        self.fpos += out.len() as u64;
+                        block_list.push(out.len() as u32);
+                    }
+                    _ => { /* write it uncompressed */
+                        file.write_all(&buf[..len])?;
+                        self.fpos += len as u64;
+                        block_list.push(len as u32 | 0x100_0000);
+                    }
                 }
             }
             if len < blocksize {

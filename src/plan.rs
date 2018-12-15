@@ -1,13 +1,13 @@
 use std::io;
 use std::path::Path;
 
-use super::yaml::Yaml;
+use super::yaml::{Yaml, YVal};
 
 use virtfs::VirtFS;
 
 fn set_attributes<T>(node: &mut virtfs::Node<T>, entry: &Yaml) -> io::Result<()> {
-    match entry["owner"] {
-        Yaml::Integer(v) => {
+    match entry["owner"].val {
+        YVal::Integer(v) => {
             if v < 0 || v > i64::from(<u32>::max_value()) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -16,7 +16,7 @@ fn set_attributes<T>(node: &mut virtfs::Node<T>, entry: &Yaml) -> io::Result<()>
             }
             node.chown(v as u32);
         }
-        Yaml::BadValue => {}
+        YVal::BadValue => {}
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -24,8 +24,8 @@ fn set_attributes<T>(node: &mut virtfs::Node<T>, entry: &Yaml) -> io::Result<()>
             ));
         }
     };
-    match entry["group"] {
-        Yaml::Integer(v) => {
+    match entry["group"].val {
+        YVal::Integer(v) => {
             if v < 0 || v > i64::from(<u32>::max_value()) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -34,7 +34,7 @@ fn set_attributes<T>(node: &mut virtfs::Node<T>, entry: &Yaml) -> io::Result<()>
             }
             node.chgrp(v as u32);
         }
-        Yaml::BadValue => {}
+        YVal::BadValue => {}
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -42,8 +42,8 @@ fn set_attributes<T>(node: &mut virtfs::Node<T>, entry: &Yaml) -> io::Result<()>
             ));
         }
     };
-    match entry["mode"] {
-        Yaml::Integer(v) => {
+    match entry["mode"].val {
+        YVal::Integer(v) => {
             if v < 0 || v > i64::from(<u16>::max_value()) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -52,7 +52,7 @@ fn set_attributes<T>(node: &mut virtfs::Node<T>, entry: &Yaml) -> io::Result<()>
             }
             node.chmod(v as u16);
         }
-        Yaml::BadValue => {}
+        YVal::BadValue => {}
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -64,9 +64,9 @@ fn set_attributes<T>(node: &mut virtfs::Node<T>, entry: &Yaml) -> io::Result<()>
 }
 
 fn mkdir<T>(fs: &mut VirtFS<T>, entry: &Yaml) -> io::Result<()> {
-    let dest = match entry["dest"] {
-        Yaml::String(ref d) => d,
-        Yaml::BadValue => {
+    let dest = match entry["dest"].val {
+        YVal::String(ref d) => d,
+        YVal::BadValue => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "no dest found"
@@ -85,9 +85,9 @@ fn mkdir<T>(fs: &mut VirtFS<T>, entry: &Yaml) -> io::Result<()> {
 }
 
 fn symlink<T>(fs: &mut VirtFS<T>, entry: &Yaml) -> io::Result<()> {
-    let dest = match entry["dest"] {
-        Yaml::String(ref d) => d,
-        Yaml::BadValue => {
+    let dest = match entry["dest"].val {
+        YVal::String(ref d) => d,
+        YVal::BadValue => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "no dest found"
@@ -100,9 +100,9 @@ fn symlink<T>(fs: &mut VirtFS<T>, entry: &Yaml) -> io::Result<()> {
             ));
         }
     };
-    let tgt = match entry["target"] {
-        Yaml::String(ref d) => d,
-        Yaml::BadValue => {
+    let tgt = match entry["target"].val {
+        YVal::String(ref d) => d,
+        YVal::BadValue => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "no target found"
@@ -123,8 +123,8 @@ fn symlink<T>(fs: &mut VirtFS<T>, entry: &Yaml) -> io::Result<()> {
 /*
 fn mknod<T>(fs: &mut VirtFS<T>, entry: &Yaml) -> io::Result<()> {
     let dest = match entry["dest"] {
-        Yaml::String(ref d) => d,
-        Yaml::BadValue => {
+        YVal::String(ref d) => d,
+        YVal::BadValue => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "no dest found"
@@ -138,8 +138,8 @@ fn mknod<T>(fs: &mut VirtFS<T>, entry: &Yaml) -> io::Result<()> {
         }
     };
     let major = match entry["major"] {
-        Yaml::Integer(n) if n < 256 => n,
-        Yaml::BadValue => 0,
+        YVal::Integer(n) if n < 256 => n,
+        YVal::BadValue => 0,
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -165,9 +165,9 @@ pub fn parsefile<P: AsRef<Path>>(path: P) -> io::Result<Vec<Yaml>> {
 }
 
 pub fn add<T>(fs: &mut VirtFS<T>, doc: &Yaml) -> io::Result<()> {
-    let plan = match doc["plan"] {
-        Yaml::Array(ref a) => a,
-        Yaml::BadValue => {
+    let plan = match doc["plan"].val {
+        YVal::Array(ref a) => a,
+        YVal::BadValue => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "no plan found"
@@ -182,9 +182,9 @@ pub fn add<T>(fs: &mut VirtFS<T>, doc: &Yaml) -> io::Result<()> {
     };
 
     for (i, v) in plan.iter().enumerate() {
-        let action = match v["do"] {
-            Yaml::String(ref p) => p,
-            Yaml::BadValue => {
+        let action = match v["do"].val {
+            YVal::String(ref p) => p,
+            YVal::BadValue => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("no type specified for plan entry {}", i)
