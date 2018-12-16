@@ -93,8 +93,8 @@ struct LZOEnc {
 }
 
 impl Compress for LZOEnc {
-    fn compress(&mut self, ins: &mut [u8], blocksize: usize) -> io::Result<&[u8]> {
-        debug_assert!(blocksize <= self.buf.len());
+    fn compress(&mut self, ins: &mut [u8]) -> io::Result<&[u8]> {
+        debug_assert!(ins.len() <= self.buf.len());
         let (ret, err) = self.ctx.compress_to_slice(ins, &mut self.buf);
         match err {
             rust_lzo::LZOError::OK =>

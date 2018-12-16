@@ -8,11 +8,15 @@ pub trait Decompress {
 }
 
 pub trait Compress {
-    fn compress<'a>(&'a mut self, ins: &mut [u8], blocksize: usize) -> io::Result<&'a [u8]>;
+    fn compress<'a>(&'a mut self, ins: &mut [u8]) -> io::Result<&'a [u8]>;
+}
+
+pub trait ReadBlock {
+    fn readblock(&mut self, buf: &mut [u8]) -> io::Result<usize>;
 }
 
 pub trait FileData {
-    fn open(&self) -> io::Result<Box<dyn io::Read>>;
+    fn open(&self) -> io::Result<Box<dyn ReadBlock>>;
 }
 
 extern crate libz_sys;

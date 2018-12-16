@@ -2,6 +2,7 @@ use std::{io, fmt};
 use byteorder::ByteOrder;
 use byteorder::LittleEndian as LE;
 use lz4_sys;
+use libc::{c_char, c_int};
 
 use super::Decompress;
 use super::Compress;
@@ -87,19 +88,26 @@ impl Decompress for LZ4Dec {
 struct LZ4Enc(Box<[u8]>);
 
 impl Compress for LZ4Enc {
-    fn compress(&mut self, ins: &mut [u8], blocksize: usize) -> io::Result<&[u8]> {
-        debug_assert!(unsafe { lz4_sys::LZ4_compressBound(blocksize as i32) } as usize <= self.0.len());
-        let ret;
-        unsafe {
-            let strm = lz4_sys::LZ4_createStream();
-            ret = lz4_sys::LZ4_compress_continue(strm, &ins[0], &mut self.0[0],
-                                           ins.len() as i32);
-            lz4_sys::LZ4_freeStream(strm);
+    fn compress(&mut self, ins: &mut [u8]) -> io::Result<&[u8]> {
+        debug_assert!(unsafe { lz4_sys::LZ4_compressBound(ins.len() as i32) } as usize <= self.0.len());
+        let ret = unsafe {
+            lz4_sys::LZ4_compress_default(
+                &ins[0] as *const u8 as *const c_char,
+                &mut self.0[0] as *mut u8 as *mut c_char,
+                ins.len() as c_int,
+                self.0.len() as c_int
+            )
         };
         if ret <= 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "lz4: encoding error"
+            ));
+        }
+        if ret as usize >= ins.len() {
+            return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "lz4: out buffer too small"
             ));
         }
         Ok(&self.0[..(ret as usize)])

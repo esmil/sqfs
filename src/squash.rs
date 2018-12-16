@@ -1,4 +1,4 @@
-use std::{io, fs, mem, cmp, time};
+use std::{io, fs, mem, time};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::ops::DerefMut;
@@ -138,9 +138,9 @@ impl MetaStream {
     }
 
     fn flush(&mut self, enc: &mut Compress) {
-        let len = cmp::min(self.offset, SQUASHFS_METADATA_SIZE);
+        let len = std::cmp::min(self.offset, SQUASHFS_METADATA_SIZE);
         let mut header: [u8; 2] = unsafe { mem::uninitialized() };
-        match enc.compress(&mut self.buf[..len], SQUASHFS_METADATA_SIZE) {
+        match enc.compress(&mut self.buf[..len]) {
             Ok(out) if out.len() < len => {
                 LE::write_u16(&mut header, out.len() as u16);
                 self.out.extend_from_slice(&header);
@@ -196,7 +196,7 @@ impl MetaStream {
 
     fn write(&mut self, enc: &mut Compress, mut data: &[u8]) {
         while !data.is_empty() {
-            let chunk = cmp::min(data.len(), SQUASHFS_METADATA_SIZE - self.offset);
+            let chunk = std::cmp::min(data.len(), SQUASHFS_METADATA_SIZE - self.offset);
             self.buf[(self.offset)..(self.offset + chunk)].copy_from_slice(data);
             self.advance(enc, chunk);
             data = &data[chunk..];
@@ -204,7 +204,8 @@ impl MetaStream {
     }
 }
 
-struct MetaData<'a, T> {
+struct MetaData<'a, 'b, T> {
+    file: &'b mut fs::File,
     comp: Compression,
     inodes: Vec<INode<'a, T>>,
     idx_to_ino: Box<[usize]>,
@@ -222,8 +223,8 @@ struct MetaData<'a, T> {
     lookup_table_start: i64,
 }
 
-impl<'a, T : FileData> MetaData<'a, T> {
-    fn new(fs: &virtfs::VirtFS<T>) -> MetaData<T> {
+impl<'a, 'b, T: FileData> MetaData<'a, 'b, T> {
+    fn new(fs: &'a virtfs::VirtFS<T>, file: &'b mut fs::File) -> MetaData<'a, 'b, T> {
         let mut inodes = Vec::with_capacity(fs.nodes());
         let mut idx_to_ino = vec![0; fs.max_idx()];
         let mut id_table: BTreeMap<u32, u16> = BTreeMap::new();
@@ -263,8 +264,12 @@ impl<'a, T : FileData> MetaData<'a, T> {
         println!("id_table = {:?}", &id_table);
 
         MetaData {
-            //comp: Compression::xz(1usize << 17),
-            comp: Compression::zlib(),
+            file,
+            //comp: Compression::lz4(),
+            //comp: Compression::lzo(),
+            //comp: Compression::lzma(),
+            comp: Compression::xz(1usize << 17),
+            //comp: Compression::zlib(),
             inodes,
             idx_to_ino: idx_to_ino.into_boxed_slice(),
             id_table,
@@ -282,7 +287,13 @@ impl<'a, T : FileData> MetaData<'a, T> {
         }
     }
 
-    fn write_file(&mut self, file: &mut fs::File, enc: &mut Compress, f: &'a virtfs::File<T>, buf: &mut [u8]) -> io::Result<INodeType<'a, T>> {
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        self.file.write_all(buf)?;
+        self.fpos += buf.len() as u64;
+        Ok(())
+    }
+
+    fn write_file(&mut self, enc: &mut Compress, f: &'a virtfs::File<T>, buf: &mut [u8]) -> io::Result<INodeType<'a, T>> {
         let blocksize = buf.len();
         let start_block = self.fpos;
         let mut file_size = 0;
@@ -290,27 +301,18 @@ impl<'a, T : FileData> MetaData<'a, T> {
         let mut block_list = Vec::new();
 
         loop {
-            let mut len = 0;
-            loop {
-                let r = r.read(&mut buf[len..])?;
-                len += r;
-                if r == 0 || len == blocksize {
-                    break;
-                }
-            }
+            let len = r.readblock(buf)?;
             file_size += len as u64;
             if buf[..len].iter().all(|&x| x == 0) {
                 block_list.push(0);
             } else {
-                match enc.compress(&mut buf[..len], blocksize) {
+                match enc.compress(&mut buf[..len]) {
                     Ok(out) if out.len() < len => {
-                        file.write_all(out)?;
-                        self.fpos += out.len() as u64;
+                        self.write_all(out)?;
                         block_list.push(out.len() as u32);
                     }
                     _ => { /* write it uncompressed */
-                        file.write_all(&buf[..len])?;
-                        self.fpos += len as u64;
+                        self.write_all(&buf[..len])?;
                         block_list.push(len as u32 | 0x100_0000);
                     }
                 }
@@ -330,8 +332,9 @@ impl<'a, T : FileData> MetaData<'a, T> {
         })
     }
 
-    fn write_file_data(&mut self, file: &mut fs::File, enc: &mut Compress) -> io::Result<()> {
+    fn write_file_data(&mut self) -> io::Result<()> {
         let blocksize = 1usize << self.block_log;
+        let mut enc = self.comp.encoder(blocksize)?;
         let mut buf = Vec::with_capacity(blocksize);
         unsafe { buf.set_len(blocksize) };
         for i in 0..self.inodes.len() {
@@ -339,12 +342,12 @@ impl<'a, T : FileData> MetaData<'a, T> {
                 INodeType::File { f, .. } => f,
                 _ => continue,
             };
-            self.inodes[i].typ = self.write_file(file, enc, f, &mut buf)?;
+            self.inodes[i].typ = self.write_file(enc.deref_mut(), f, &mut buf)?;
         }
         Ok(())
     }
 
-    fn write_inode_table(&mut self, file: &mut fs::File, enc: &mut Compress) -> io::Result<()> {
+    fn write_inode_table(&mut self, enc: &mut Compress) -> io::Result<()> {
         let mut entries: Vec<(usize, &[u8])> = Vec::new();
         let mut itable = MetaStream::new();
         let mut dtable = MetaStream::new();
@@ -510,13 +513,11 @@ impl<'a, T : FileData> MetaData<'a, T> {
 
         self.inode_table_start = self.fpos as i64;
         itable.flush(enc);
-        file.write_all(&itable.out)?;
-        self.fpos += itable.out.len() as u64;
+        self.write_all(&itable.out)?;
 
         self.directory_table_start = self.fpos as i64;
         dtable.flush(enc);
-        file.write_all(&dtable.out)?;
-        self.fpos += dtable.out.len() as u64;
+        self.write_all(&dtable.out)?;
 
         self.root_inode = {
             let root = &self.inodes[self.inodes.len() - 1];
@@ -530,7 +531,7 @@ impl<'a, T : FileData> MetaData<'a, T> {
         &self.inodes[ino - 1]
     }
 
-    fn write_fragment_table(&mut self, _file: &mut fs::File) -> io::Result<()> {
+    fn write_fragment_table(&mut self, _enc: &mut Compress) -> io::Result<()> {
         if self.fragments == 0 {
             /* squashfs-tools sets this even when there are no fragments
              * let's do the same for compatibility */
@@ -545,7 +546,7 @@ impl<'a, T : FileData> MetaData<'a, T> {
         ))
     }
 
-    fn write_id_table(&mut self, file: &mut fs::File, enc: &mut Compress) -> io::Result<()> {
+    fn write_id_table(&mut self, enc: &mut Compress) -> io::Result<()> {
         let mut index = {
             let ids = self.id_table.len();
             let len = (4*ids + SQUASHFS_METADATA_SIZE - 1) / SQUASHFS_METADATA_SIZE;
@@ -561,8 +562,7 @@ impl<'a, T : FileData> MetaData<'a, T> {
                 ms.u32(enc, v);
             }
             ms.flush(enc);
-            file.write_all(&ms.out)?;
-            self.fpos += ms.out.len() as u64;
+            self.write_all(&ms.out)?;
         }
 
         let mut buf: [u8; 256] = unsafe { mem::uninitialized() };
@@ -572,13 +572,12 @@ impl<'a, T : FileData> MetaData<'a, T> {
             pos += 8;
         }
         self.id_table_start = self.fpos as i64;
-        file.write_all(&buf[..pos])?;
-        self.fpos += pos as u64;
+        self.write_all(&buf[..pos])?;
 
         Ok(())
     }
 
-    fn write_superblock(&mut self, file: &mut fs::File) -> io::Result<()> {
+    fn write_superblock(&mut self) -> io::Result<()> {
         let mkfs_time = match time::SystemTime::now().duration_since(time::UNIX_EPOCH) {
             Ok(n) => n.as_secs() as i32,
             Err(e) => return Err(io::Error::new(
@@ -606,12 +605,12 @@ impl<'a, T : FileData> MetaData<'a, T> {
         LE::write_i64(&mut buf[72..], self.directory_table_start);
         LE::write_i64(&mut buf[80..], self.fragment_table_start);
         LE::write_i64(&mut buf[88..], self.lookup_table_start);
-        file.write_all(&buf)
+        self.file.write_all(&buf)
     }
 }
 
-pub fn write<T : FileData>(fs: &virtfs::VirtFS<T>, file: &mut fs::File, offset: u64) -> io::Result<()> {
-    let mut md = MetaData::new(fs);
+pub fn write<'a, 'b, T : FileData>(fs: &virtfs::VirtFS<T>, file: &mut fs::File, offset: u64) -> io::Result<()> {
+    let mut md = MetaData::new(fs, file);
 
     if md.id_table.len() > u16::max_value() as usize {
         return Err(io::Error::new(
@@ -620,21 +619,24 @@ pub fn write<T : FileData>(fs: &virtfs::VirtFS<T>, file: &mut fs::File, offset: 
         ));
     }
 
-    let mut enc = md.comp.encoder(1usize << md.block_log)?;
+    md.file.seek(io::SeekFrom::Start(offset + md.fpos))?;
 
-    file.seek(io::SeekFrom::Start(offset + md.fpos))?;
-    md.write_file_data(file, enc.deref_mut())?;
-    md.write_inode_table(file, enc.deref_mut())?;
-    md.write_fragment_table(file)?;
-    md.write_id_table(file, enc.deref_mut())?;
+    md.write_file_data()?;
+
+    {
+        let mut enc = md.comp.encoder(SQUASHFS_METADATA_SIZE)?;
+        md.write_inode_table(enc.deref_mut())?;
+        md.write_fragment_table(enc.deref_mut())?;
+        md.write_id_table(enc.deref_mut())?;
+    }
 
     let tail = md.fpos % 4096;
     if tail != 0 {
-        let aligned_end = md.fpos - tail + 4095;
-        file.seek(io::SeekFrom::Start(offset + aligned_end))?;
-        file.write_all(b"\0")?;
+        let aligned_end = md.fpos + 4095 - tail;
+        md.file.seek(io::SeekFrom::Start(offset + aligned_end))?;
+        md.file.write_all(b"\0")?;
     }
 
-    file.seek(io::SeekFrom::Start(offset))?;
-    md.write_superblock(file)
+    md.file.seek(io::SeekFrom::Start(offset))?;
+    md.write_superblock()
 }

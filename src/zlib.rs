@@ -186,11 +186,11 @@ impl Drop for ZLibEnc {
 }
 
 impl Compress for ZLibEnc {
-    fn compress(&mut self, ins: &mut [u8], blocksize: usize) -> io::Result<&[u8]> {
-        debug_assert!(blocksize <= self.buf[0].len());
-        debug_assert!(blocksize <= self.buf[1].len());
+    fn compress(&mut self, ins: &mut [u8]) -> io::Result<&[u8]> {
+        debug_assert!(ins.len() <= self.buf[0].len());
+        debug_assert!(ins.len() <= self.buf[1].len());
         let mut ret = libz_sys::Z_BUF_ERROR;
-        let mut best = blocksize;
+        let mut best = ins.len();
         let mut tick = 0;
 
         for strat in &STRATEGIES {
@@ -210,7 +210,7 @@ impl Compress for ZLibEnc {
              * so make sure it doesn't consume anything */
             self.strm.avail_in = 0;
             self.strm.next_out = &mut self.buf[tick][0];
-            self.strm.avail_out = blocksize as u32;
+            self.strm.avail_out = self.buf[tick].len() as u32;
 
             ret = unsafe {
                 libz_sys::deflateParams(&mut self.strm,
@@ -244,7 +244,7 @@ impl Compress for ZLibEnc {
         }
 
         match ret {
-            libz_sys::Z_BUF_ERROR if best < blocksize =>
+            libz_sys::Z_BUF_ERROR if best < ins.len() =>
                 Ok(&self.buf[tick^1][..best]),
             libz_sys::Z_NEED_DICT =>
                 Err(io::Error::new(io::ErrorKind::InvalidInput, "zlib: need preset dictionary")),

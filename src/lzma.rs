@@ -135,14 +135,14 @@ impl Drop for LZMAEnc {
 }
 
 impl Compress for LZMAEnc {
-    fn compress(&mut self, ins: &mut [u8], blocksize: usize) -> io::Result<&[u8]> {
-        debug_assert!(blocksize <= self.buf.len());
+    fn compress(&mut self, ins: &mut [u8]) -> io::Result<&[u8]> {
+        debug_assert!(ins.len() <= self.buf.len());
         self.strm.next_in = &ins[0];
         self.strm.avail_in = ins.len();
         self.strm.next_out = &mut self.buf[0];
-        self.strm.avail_out = blocksize;
+        self.strm.avail_out = self.buf.len();
 
-        self.opts.dict_size = blocksize as u32;
+        self.opts.dict_size = self.buf.len() as u32;
 
         let mut ret = unsafe {
             lzma_sys::lzma_alone_encoder(&mut self.strm, &self.opts)
@@ -154,12 +154,18 @@ impl Compress for LZMAEnc {
         }
         match ret {
             lzma_sys::LZMA_STREAM_END => {
+                let len = self.strm.total_out as usize;
                 let mut size = ins.len();
+                if len + LZMA_HEADER_SIZE >= size {
+                    return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "lzma: out buffer too small"
+                    ));
+                }
                 for p in &mut self.buf[LZMA_PROPS_SIZE..LZMA_HEADER_SIZE] {
                     *p = size as u8;
                     size >>= 8;
                 }
-                let len = self.strm.total_out as usize;
                 Ok(&self.buf[..len])
             }
             lzma_sys::LZMA_FORMAT_ERROR =>

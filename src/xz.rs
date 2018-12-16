@@ -172,10 +172,10 @@ impl Drop for XZEnc {
 }
 
 impl Compress for XZEnc {
-    fn compress(&mut self, ins: &mut [u8], blocksize: usize) -> io::Result<&[u8]> {
-        debug_assert!(blocksize <= self.buf[0].len());
-        debug_assert!(blocksize <= self.buf[1].len());
-        let mut best = blocksize;
+    fn compress(&mut self, ins: &mut [u8]) -> io::Result<&[u8]> {
+        debug_assert!(ins.len() <= self.buf[0].len());
+        debug_assert!(ins.len() <= self.buf[1].len());
+        let mut best = ins.len();
         let mut tick = 0;
         let mut ret = lzma_sys::LZMA_BUF_ERROR;
 
@@ -192,7 +192,7 @@ impl Compress for XZEnc {
             self.strm.next_in = &ins[0];
             self.strm.avail_in = ins.len();
             self.strm.next_out = &mut self.buf[tick][0];
-            self.strm.avail_out = blocksize;
+            self.strm.avail_out = self.buf[tick].len();
             ret = unsafe {
                 lzma_sys::lzma_stream_encoder(&mut self.strm,
                                               &filter[0],
@@ -221,7 +221,7 @@ impl Compress for XZEnc {
         }
 
         match ret {
-            lzma_sys::LZMA_BUF_ERROR if best < blocksize =>
+            lzma_sys::LZMA_BUF_ERROR if best < ins.len() =>
                 Ok(&self.buf[tick^1][..best]),
             lzma_sys::LZMA_FORMAT_ERROR =>
                 Err(io::Error::new(io::ErrorKind::InvalidInput, "xz: format error")),

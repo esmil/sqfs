@@ -1,4 +1,5 @@
 use std::{io, fs};
+use std::io::Read;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
@@ -20,20 +21,56 @@ extern crate yaml_rust;
 mod yaml;
 mod plan;
 
+struct FileBlockReader(fs::File);
+
+impl squashfs::ReadBlock for FileBlockReader {
+    fn readblock(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut len = 0;
+        loop {
+            let chunk = self.0.read(&mut buf[len..])?;
+            if chunk == 0 {
+                break;
+            }
+            len += chunk;
+            if len == buf.len() {
+                break;
+            }
+        }
+        Ok(len)
+    }
+}
+
+struct MemBlockReader<'a> {
+    data: &'a [u8],
+    idx: usize,
+}
+
+impl<'a> squashfs::ReadBlock for MemBlockReader<'a> {
+    fn readblock(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let chunk = std::cmp::min(self.data.len() - self.idx, buf.len());
+        buf[..chunk].copy_from_slice(&self.data[self.idx..(self.idx + chunk)]);
+        self.idx += chunk;
+        Ok(chunk)
+    }
+}
+
 enum FileData {
     Path(PathBuf),
     Static(&'static [u8]),
 }
 
 impl squashfs::FileData for FileData {
-    fn open(&self) -> io::Result<Box<dyn io::Read>> {
+    fn open(&self) -> io::Result<Box<dyn squashfs::ReadBlock>> {
         match *self {
             FileData::Path(ref p) => {
                 println!("Opening '{}'", p.to_str().unwrap_or("<non-utf8>"));
-                Ok(Box::new(std::fs::File::open(p)?))
+                Ok(Box::new(FileBlockReader(std::fs::File::open(p)?)))
             }
             FileData::Static(buf) => {
-                Ok(Box::new(std::io::Cursor::new(buf)))
+                Ok(Box::new(MemBlockReader {
+                    data: buf,
+                    idx: 0,
+                }))
             }
         }
     }
