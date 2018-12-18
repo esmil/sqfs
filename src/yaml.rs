@@ -1,284 +1,72 @@
-use linked_hash_map::LinkedHashMap;
 use yaml_rust::parser::{Parser, Event, MarkedEventReceiver};
 use yaml_rust::scanner::{Marker, ScanError, TScalarStyle, TokenType};
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::f64;
 use std::i64;
-//use std::ops::Index;
-
-pub type Array = Vec<Yaml>;
-pub type Hash = LinkedHashMap<Yaml, Yaml>;
-
-#[derive(Clone, PartialEq, PartialOrd, Debug, Eq, Ord, Hash)]
-pub enum YVal {
-    /// Float types are stored as String and parsed on demand.
-    /// Note that f64 does NOT implement Eq trait and can NOT be stored in BTreeMap.
-    Real(String),
-    /// YAML int is stored as i64.
-    Integer(i64),
-    /// YAML scalar.
-    String(String),
-    /// YAML bool, e.g. `true` or `false`.
-    Boolean(bool),
-    /// YAML array, can be accessed as a `Vec`.
-    Array(self::Array),
-    /// YAML hash, can be accessed as a `LinkedHashMap`.
-    ///
-    /// Itertion order will match the order of insertion into the map.
-    Hash(self::Hash),
-    /// YAML null, e.g. `null` or `~`.
-    Null,
-}
-
-#[derive(Clone, Debug)]
-pub struct Yaml {
-    pub line: usize,
-    pub col: usize,
-    pub val: YVal,
-}
-
-impl PartialEq for Yaml {
-    fn eq(&self, other: &Self) -> bool {
-        self.val.eq(&other.val)
-    }
-}
-impl Eq for Yaml {}
-
-impl PartialOrd for Yaml {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.val.partial_cmp(&other.val)
-    }
-}
-
-impl Ord for Yaml {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.val.cmp(&other.val)
-    }
-}
-
-impl std::hash::Hash for Yaml {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.val.hash(state);
-    }
-}
-
-/*
-impl PartialEq for Yaml {
-    fn eq(&self, other: &Self) -> bool {
-        match (*self, *other) {
-            (Real(a),    Real(b))    => a.eq(b),
-            (Integer(a), Integer(b)) => a.eq(b),
-            (String(a),  String(b))  => a.eq(b),
-            (Boolean(a), Boolean(b)) => a.eq(b),
-
-*/
+use super::annojson::{self, AnnoJSON, JSON};
 
 // parse f64 as Core schema
 // See: https://github.com/chyh1990/yaml-rust/issues/51
-fn parse_f64(v: &str) -> Option<f64> {
+fn parse_f64(v: &str) -> Result<f64, std::num::ParseFloatError> {
     match v {
-        ".inf" | ".Inf" | ".INF" | "+.inf" | "+.Inf" | "+.INF" => Some(f64::INFINITY),
-        "-.inf" | "-.Inf" | "-.INF" => Some(f64::NEG_INFINITY),
-        ".nan" | "NaN" | ".NAN" => Some(f64::NAN),
-        _ => v.parse::<f64>().ok(),
+        ".inf" | ".Inf" | ".INF" | "+.inf" | "+.Inf" | "+.INF" => Ok(f64::INFINITY),
+        "-.inf" | "-.Inf" | "-.INF" => Ok(f64::NEG_INFINITY),
+        ".nan" | "NaN" | ".NAN" => Ok(f64::NAN),
+        _ => v.parse::<f64>(),
     }
 }
 
-macro_rules! define_as (
-    ($name:ident, $t:ident, $yt:ident) => (
-        #[allow(dead_code)]
-        pub fn $name(&self) -> Option<$t> {
-            match self.val {
-                YVal::$yt(v) => Some(v),
-                _ => None
-            }
-        }
-    );
-);
-
-macro_rules! define_as_ref (
-    ($name:ident, $t:ty, $yt:ident) => (
-        #[allow(dead_code)]
-        pub fn $name(&self) -> Option<$t> {
-            match self.val {
-                YVal::$yt(ref v) => Some(v),
-                _ => None
-            }
-        }
-    );
-);
-
-macro_rules! define_into (
-    ($name:ident, $t:ty, $yt:ident) => (
-        #[allow(dead_code)]
-        pub fn $name(self) -> Option<$t> {
-            match self.val {
-                YVal::$yt(v) => Some(v),
-                _ => None
-            }
-        }
-    );
-);
-
-impl YVal {
-    // Not implementing FromStr because there is no possibility of Error.
-    // This function falls back to Yaml::String if nothing else matches.
-    fn from_str(v: &str) -> YVal {
-        match v {
-            "~" | "null" => return YVal::Null,
-            "true"       => return YVal::Boolean(true),
-            "false"      => return YVal::Boolean(false),
-            _            => {}
-        };
-        if v.starts_with("0x") {
-            if let Ok(n) = i64::from_str_radix(&v[2..], 16) {
-                return YVal::Integer(n);
-            }
-        }
-        if v.starts_with("0o") {
-            if let Ok(n) = i64::from_str_radix(&v[2..], 8) {
-                return YVal::Integer(n);
-            }
-        }
-        if v.starts_with('0') {
-            if let Ok(n) = i64::from_str_radix(&v[1..], 8) {
-                return YVal::Integer(n);
-            }
-        }
-        if v.starts_with('+') {
-            if let Ok(n) = v[1..].parse::<i64>() {
-                return YVal::Integer(n);
-            }
-        }
-        if let Ok(n) = v.parse::<i64>() {
-            return YVal::Integer(n);
-        }
-        if parse_f64(v).is_some() {
-            return YVal::Real(v.to_owned());
-        }
-        YVal::String(v.to_owned())
-    }
-}
-
-impl Yaml {
-    define_as!(as_bool, bool, Boolean);
-    define_as!(as_i64, i64, Integer);
-
-    define_as_ref!(as_str, &str, String);
-    define_as_ref!(as_hash, &Hash, Hash);
-    define_as_ref!(as_vec, &Array, Array);
-
-    define_into!(into_bool, bool, Boolean);
-    define_into!(into_i64, i64, Integer);
-    define_into!(into_string, String, String);
-    define_into!(into_hash, Hash, Hash);
-    define_into!(into_vec, Array, Array);
-
-    #[allow(dead_code)]
-    pub fn is_null(&self) -> bool {
-        match self.val {
-            YVal::Null => true,
-            _ => false,
+fn json_from_str(v: &str) -> JSON {
+    match v {
+        "~" | "null" => return JSON::Null,
+        "true"       => return JSON::Boolean(true),
+        "false"      => return JSON::Boolean(false),
+        _            => {}
+    };
+    if v.starts_with("0x") {
+        if let Ok(n) = i64::from_str_radix(&v[2..], 16) {
+            return JSON::Integer(n);
         }
     }
-
-    #[allow(dead_code)]
-    pub fn is_array(&self) -> bool {
-        match self.val {
-            YVal::Array(_) => true,
-            _ => false,
+    if v.starts_with("0o") {
+        if let Ok(n) = i64::from_str_radix(&v[2..], 8) {
+            return JSON::Integer(n);
         }
     }
-
-    #[allow(dead_code)]
-    pub fn as_f64(&self) -> Option<f64> {
-        match self.val {
-            YVal::Real(ref v) => parse_f64(v),
-            _ => None,
+    if v.starts_with('0') {
+        if let Ok(n) = i64::from_str_radix(&v[1..], 8) {
+            return JSON::Integer(n);
         }
     }
-
-    #[allow(dead_code)]
-    pub fn into_f64(self) -> Option<f64> {
-        match self.val {
-            YVal::Real(ref v) => parse_f64(v),
-            _ => None,
+    if v.starts_with('+') {
+        if let Ok(n) = v[1..].parse::<i64>() {
+            return JSON::Integer(n);
         }
     }
-}
-
-/*
-impl<'a> Index<&'a str> for Yaml {
-    type Output = Yaml;
-
-    fn index(&self, idx: &'a str) -> &Yaml {
-        match self.val {
-            YVal::Hash(ref h) => {
-                let key = Yaml { line: 0, col: 0, val: YVal::String(idx.to_owned()) };
-                h.get(&key).unwrap_or(&BAD_VALUE)
-            }
-            _ => &BAD_VALUE,
-        }
+    if let Ok(n) = v.parse::<i64>() {
+        return JSON::Integer(n);
     }
-}
-
-impl Index<usize> for Yaml {
-    type Output = Yaml;
-
-    fn index(&self, idx: usize) -> &Yaml {
-        match self.val {
-            YVal::Array(ref v) => {
-                v.get(idx).unwrap_or(&BAD_VALUE)
-            }
-            YVal::Hash(ref h)  => {
-                let key = Yaml { line: 0, col: 0, val: YVal::Integer(idx as i64) };
-                h.get(&key).unwrap_or(&BAD_VALUE)
-            }
-            _ => &BAD_VALUE
-        }
+    if let Ok(n) = parse_f64(v) {
+        return JSON::Float(n);
     }
-}
-*/
-
-impl IntoIterator for Yaml {
-    type Item = Yaml;
-    type IntoIter = YamlIter;
-
-    fn into_iter(self) -> Self::IntoIter {
-        YamlIter {
-            yaml: self.into_vec().unwrap_or_else(Vec::new).into_iter(),
-        }
-    }
-}
-
-pub struct YamlIter {
-    yaml: std::vec::IntoIter<Yaml>,
-}
-
-impl Iterator for YamlIter {
-    type Item = Yaml;
-
-    fn next(&mut self) -> Option<Yaml> {
-        self.yaml.next()
-    }
+    JSON::String(v.to_owned())
 }
 
 #[derive(Debug)]
 enum StackEntry {
-    Array(usize, usize, self::Array, usize),
-    Mapping(usize, usize, self::Hash, usize),
-    Key(Yaml),
+    Array(usize, usize, annojson::Array, usize),
+    Map(usize, usize, annojson::Map, usize),
+    Key(String),
 }
 
 struct Loader {
-    err: Option<ScanError>,
+    result: Result<AnnoJSON, ScanError>,
     stack: Vec<StackEntry>,
-    anchors: BTreeMap<usize, Yaml>,
-    docs: Vec<Yaml>,
+    anchors: HashMap<usize, AnnoJSON>,
 }
 
 impl Loader {
-    fn insert(&mut self, node: Yaml, aid: usize) {
+    fn insert(&mut self, node: AnnoJSON, loc: Marker, aid: usize) {
         if aid > 0 {
             self.anchors.insert(aid, node.clone());
         }
@@ -287,36 +75,38 @@ impl Loader {
                 v.push(node);
                 self.stack.push(StackEntry::Array(line, col, v, aid));
             }
-            Some(StackEntry::Mapping(line, col, h, aid)) => {
-                self.stack.push(StackEntry::Mapping(line, col, h, aid));
-                self.stack.push(StackEntry::Key(node));
+            Some(StackEntry::Map(line, col, m, aid)) => {
+                if let AnnoJSON { v: JSON::String(s), .. } = node {
+                    self.stack.push(StackEntry::Map(line, col, m, aid));
+                    self.stack.push(StackEntry::Key(s));
+                } else {
+                    self.error(loc, "non-string keys not allowed");
+                }
             }
             Some(StackEntry::Key(key)) => {
                 let h = match self.stack.last_mut() {
-                    Some(StackEntry::Mapping(_, _, ref mut h, _)) => h,
+                    Some(StackEntry::Map(_, _, ref mut m, _)) => m,
                     _ => unreachable!(),
                 };
                 h.insert(key, node);
             }
             None => {
-                self.docs.push(node);
+                self.result = Ok(node);
             }
         }
     }
 
     fn error(&mut self, loc: Marker, info: &'static str) {
-        self.err = Some(ScanError::new(loc, info));
+        self.result = Err(ScanError::new(loc, info));
     }
 }
 
 impl MarkedEventReceiver for Loader {
     fn on_event(&mut self, ev: Event, m: Marker) {
-        if self.err.is_some() {
+        if self.result.is_err() {
             return;
         }
-        let line = m.line();
-        let col = m.col();
-        //println!("{:3}:{:2} {:?}", line, col, ev);
+        //println!("{:3}:{:2} {:?}", m.line(), m.col(), ev);
         match ev {
             Event::Nothing => {}
             Event::StreamStart => {}
@@ -328,87 +118,84 @@ impl MarkedEventReceiver for Loader {
                     Some(v) => v.clone(),
                     None => return self.error(m, "invalid anchor"),
                 };
-                self.insert(node, 0);
+                self.insert(node, m, 0);
             }
             Event::Scalar(v, style, aid, tag) => {
-                let val = if style != TScalarStyle::Plain {
-                    YVal::String(v)
+                let v = if style != TScalarStyle::Plain {
+                    JSON::String(v)
                 } else if let Some(TokenType::Tag(ref handle, ref suffix)) = tag {
                     // XXX tag:yaml.org,2002:
                     if handle == "!!" {
                         match suffix.as_ref() {
+                            "null" => match v.as_ref() {
+                                "~" | "null" => JSON::Null,
+                                _ => return self.error(m, "null must be '~' or 'null'"),
+                            },
                             "bool" => {
                                 match v.as_str() {
-                                    "true"  => YVal::Boolean(true),
-                                    "false" => YVal::Boolean(false),
+                                    "true"  => JSON::Boolean(true),
+                                    "false" => JSON::Boolean(false),
                                     _ => return self.error(m, "boolean must be 'true' or 'false'"),
                                 }
                             }
                             "int" => match v.parse::<i64>() {
-                                Ok(v) => YVal::Integer(v),
+                                Ok(v)  => JSON::Integer(v),
                                 Err(_) => return self.error(m, "invalid integer"),
                             },
                             "float" => match parse_f64(&v) {
-                                Some(_) => YVal::Real(v),
-                                None => return self.error(m, "invalid float"),
+                                Ok(n)  => JSON::Float(n),
+                                Err(_) => return self.error(m, "invalid float"),
                             },
-                            "null" => match v.as_ref() {
-                                "~" | "null" => YVal::Null,
-                                _ => return self.error(m, "null must be '~' or 'null'"),
-                            },
-                            "str" => YVal::String(v),
-                            _ => return self.error(m, "unknown tag"),
+                            "str" => JSON::String(v),
+                            _ => return self.error(m, "unknown tag suffix"),
                         }
                     } else {
-                        YVal::String(v)
+                        JSON::String(v)
+                        //return self.error(m, "unknown tag handle");
                     }
                 } else {
                     // Datatype is not specified, or unrecognized
-                    YVal::from_str(&v)
+                    json_from_str(&v)
                 };
-                self.insert(Yaml { line, col, val }, aid);
+                self.insert(AnnoJSON { line: m.line(), col: m.col(), v }, m, aid);
             }
             Event::SequenceStart(aid) => {
-                self.stack.push(StackEntry::Array(line, col, Vec::new(), aid));
+                self.stack.push(StackEntry::Array(m.line(), m.col(), Vec::new(), aid));
             }
             Event::SequenceEnd => {
                 let (node, aid) = match self.stack.pop() {
                     Some(StackEntry::Array(line, col, v, aid)) => {
-                        (Yaml { line, col, val: YVal::Array(v) }, aid)
+                        (AnnoJSON { line, col, v: JSON::Array(v) }, aid)
                     }
                     _ => unreachable!(),
                 };
-                self.insert(node, aid);
+                self.insert(node, m, aid);
             }
             Event::MappingStart(aid) => {
-                self.stack.push(StackEntry::Mapping(line, col, LinkedHashMap::new(), aid));
+                self.stack.push(StackEntry::Map(m.line(), m.col(), annojson::Map::new(), aid));
             }
             Event::MappingEnd => {
                 let (node, aid) = match self.stack.pop() {
-                    Some(StackEntry::Mapping(line, col, h, aid)) => {
-                        (Yaml { line, col, val: YVal::Hash(h) }, aid)
+                    Some(StackEntry::Map(line, col, m, aid)) => {
+                        (AnnoJSON { line, col, v: JSON::Object(m) }, aid)
                     }
                     _ => unreachable!(),
                 };
-                self.insert(node, aid);
+                self.insert(node, m, aid);
             }
         };
     }
 }
 
-pub fn load_from_str(source: &str) -> Result<Vec<Yaml>, ScanError> {
+pub fn load_from_str(source: &str) -> Result<AnnoJSON, ScanError> {
     let mut loader = Loader {
-        err: None,
+        result: Ok(AnnoJSON { line: 0, col: 0, v: JSON::Null }),
         stack: Vec::new(),
-        anchors: BTreeMap::new(),
-        docs: Vec::new(),
+        anchors: Default::default(),
     };
     let mut parser = Parser::new(source.chars());
-    parser.load(&mut loader, true)?;
-    if let Some(err) = loader.err {
-        return Err(err);
-    }
-    Ok(loader.docs)
+    parser.load(&mut loader, false)?;
+    loader.result
 }
 
 #[cfg(test)]
@@ -423,11 +210,11 @@ b: 2.2
 c: [1, 2]
 ";
         let out = load_from_str(&s).unwrap();
-        let doc = &out[0];
+        let doc = &out;
         assert_eq!(doc["a"].as_i64().unwrap(), 1i64);
         assert_eq!(doc["b"].as_f64().unwrap(), 2.2f64);
         assert_eq!(doc["c"][1].as_i64().unwrap(), 2i64);
-        assert!(doc["d"][0].is_badvalue());
+        assert!(doc["d"][0].is_null());
     }
 
     #[test]
@@ -435,7 +222,7 @@ c: [1, 2]
         let s: String = "".to_owned();
         load_from_str(&s).unwrap();
         let s: String = "---".to_owned();
-        let v = Yaml { line: 0, col: 0, val: YVal::Null };
+        let v = AnnoJSON { line: 0, col: 0, v: JSON::Null };
         assert_eq!(load_from_str(&s).unwrap()[0], v);
     }
 
@@ -458,21 +245,8 @@ a6: \"double_quoted\"
 a7: 你好
 ".to_owned();
         let out = load_from_str(&s).unwrap();
-        let doc = &out[0];
+        let doc = &out;
         assert_eq!(doc["a7"].as_str().unwrap(), "你好");
-    }
-
-    #[test]
-    fn test_multi_doc() {
-        let s = "
-'a scalar'
----
-'a scalar'
----
-'a scalar'
-";
-        let out = load_from_str(&s).unwrap();
-        assert_eq!(out.len(), 3);
     }
 
     #[test]
@@ -484,7 +258,7 @@ a1: &DEFAULT
 a2: *DEFAULT
 ";
         let out = load_from_str(&s).unwrap();
-        let doc = &out[0];
+        let doc = &out;
         assert_eq!(doc["a2"]["b1"].as_i64().unwrap(), 4);
     }
 
@@ -503,7 +277,7 @@ a1: &DEFAULT
         // https://github.com/chyh1990/yaml-rust/issues/27
         let s = "&a";
         let out = load_from_str(&s).unwrap();
-        let doc = &out[0];
+        let doc = &out;
         assert_eq!(doc.as_str().unwrap(), "");
     }
 
@@ -539,7 +313,7 @@ a1: &DEFAULT
 - [ true, false ]
 ";
         let out = load_from_str(&s).unwrap();
-        let doc = &out[0];
+        let doc = &out;
 
         assert_eq!(doc[0].as_str().unwrap(), "string");
         assert_eq!(doc[1].as_str().unwrap(), "string");
@@ -578,27 +352,29 @@ a1: &DEFAULT
         assert!(load_from_str(&s).is_err());
     }
 
+    /*
     #[test]
     fn test_issue_65() {
         // See: https://github.com/chyh1990/yaml-rust/issues/65
         let b = "\n\"ll\\\"ll\\\r\n\"ll\\\"ll\\\r\r\r\rU\r\r\rU";
-        assert!(load_from_str(&b).is_err());
+        assert!(load_from_str(b).is_err());
     }
+    */
 
     #[test]
     fn test_bad_docstart() {
         assert!(load_from_str("---This used to cause an infinite loop").is_ok());
         assert_eq!(
             load_from_str("----"),
-            Ok(vec![Yaml { line: 0, col: 0, val: YVal::String(String::from("----")) }])
+            Ok(AnnoJSON { line: 1, col: 0, v: JSON::String(String::from("----")) })
         );
         assert_eq!(
             load_from_str("--- #here goes a comment"),
-            Ok(vec![Yaml { line: 0, col: 0, val: YVal::Null }])
+            Ok(AnnoJSON { line: 2, col: 0, v: JSON::Null })
         );
         assert_eq!(
             load_from_str("---- #here goes a comment"),
-            Ok(vec![Yaml { line: 0, col: 0, val: YVal::String(String::from("----")) }])
+            Ok(AnnoJSON { line: 1, col: 0, v: JSON::String(String::from("----")) })
         );
     }
 
@@ -626,8 +402,8 @@ a1: &DEFAULT
 - .NAN
 - !!float .INF
 ";
-        let mut out = load_from_str(&s).unwrap().into_iter();
-        let mut doc = out.next().unwrap().into_iter();
+        let out = load_from_str(&s).unwrap();
+        let mut doc = out.into_iter();
 
         assert_eq!(doc.next().unwrap().into_string().unwrap(), "string");
         assert_eq!(doc.next().unwrap().into_string().unwrap(), "string");
@@ -652,47 +428,6 @@ a1: &DEFAULT
     }
 
     #[test]
-    fn test_hash_order() {
-        let s = "---
-b: ~
-a: ~
-c: ~
-";
-        let out = load_from_str(&s).unwrap();
-        let first = out.into_iter().next().unwrap();
-        let mut iter = first.into_hash().unwrap().into_iter();
-        assert_eq!(
-            Some((Yaml { line: 0, col: 0, val: YVal::String("b".to_owned()) },
-                Yaml { line: 0, col: 0, val: YVal::Null })),
-            iter.next()
-        );
-        assert_eq!(
-            Some((Yaml { line: 0, col: 0, val: YVal::String("a".to_owned()) },
-                Yaml { line: 0, col: 0, val: YVal::Null })),
-            iter.next()
-        );
-        assert_eq!(
-            Some((Yaml { line: 0, col: 0, val: YVal::String("c".to_owned()) },
-                Yaml { line: 0, col: 0, val: YVal::Null })),
-            iter.next()
-        );
-        assert_eq!(None, iter.next());
-    }
-
-    #[test]
-    fn test_integer_key() {
-        let s = "
-0:
-    important: true
-1:
-    important: false
-";
-        let out = load_from_str(&s).unwrap();
-        let first = out.into_iter().next().unwrap();
-        assert_eq!(first[0]["important"].as_bool().unwrap(), true);
-    }
-
-    #[test]
     fn test_indentation_equality() {
         let four_spaces = load_from_str(
             r#"
@@ -700,10 +435,7 @@ hash:
     with:
         indentations
 "#,
-        ).unwrap()
-        .into_iter()
-        .next()
-        .unwrap();
+        ).unwrap();
 
         let two_spaces = load_from_str(
             r#"
@@ -711,10 +443,7 @@ hash:
   with:
     indentations
 "#,
-        ).unwrap()
-        .into_iter()
-        .next()
-        .unwrap();
+        ).unwrap();
 
         let one_space = load_from_str(
             r#"
@@ -722,10 +451,7 @@ hash:
  with:
   indentations
 "#,
-        ).unwrap()
-        .into_iter()
-        .next()
-        .unwrap();
+        ).unwrap();
 
         let mixed_spaces = load_from_str(
             r#"
@@ -733,14 +459,12 @@ hash:
      with:
                indentations
 "#,
-        ).unwrap()
-        .into_iter()
-        .next()
-        .unwrap();
+        ).unwrap();
 
-        assert_eq!(four_spaces, two_spaces);
-        assert_eq!(two_spaces, one_space);
-        assert_eq!(four_spaces, mixed_spaces);
+        assert_eq!(four_spaces["hash"]["with"].v, JSON::String("indentations".to_string()));
+        assert_eq!(four_spaces["hash"]["with"].v, two_spaces["hash"]["with"].v);
+        assert_eq!(two_spaces["hash"]["with"].v, one_space["hash"]["with"].v);
+        assert_eq!(four_spaces["hash"]["with"].v, mixed_spaces["hash"]["with"].v);
     }
 
     #[test]
@@ -760,13 +484,13 @@ subcommands3:
             "#;
 
         let out = load_from_str(&s).unwrap();
-        let doc = &out.into_iter().next().unwrap();
+        let doc = &out;
 
         println!("{:#?}", doc);
         assert_eq!(doc["subcommands"][0]["server"],
-                   Yaml { line: 0, col: 0, val: YVal::Null });
-        assert!(doc["subcommands2"][0]["server"].as_hash().is_some());
-        assert!(doc["subcommands3"][0]["server"].as_hash().is_some());
+                   AnnoJSON { line: 4, col: 4, v: JSON::Null });
+        assert!(doc["subcommands2"][0]["server"].as_map().is_some());
+        assert!(doc["subcommands3"][0]["server"].as_map().is_some());
     }
 
     #[test]

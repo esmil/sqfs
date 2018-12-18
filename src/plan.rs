@@ -2,16 +2,15 @@ use std::io;
 use std::path::Path;
 
 use super::{PResult, failure};
-use super::yaml::{Yaml, YVal};
+use super::annojson::{AnnoJSON, JSON};
 
 use virtfs::VirtFS;
 
-fn expect_array<'a>(doc: &'a Yaml, idx: &str) -> PResult<&'a Vec<Yaml>> {
-    if let YVal::Hash(ref h) = doc.val {
-        let k = Yaml { line: 0, col: 0, val: YVal::String(String::from(idx)) };
-        match h.get(&k) {
-            Some(&Yaml { val: YVal::Array(ref a), .. }) => Ok(a),
-            Some(&Yaml { line, col, .. }) => {
+fn expect_array<'a>(doc: &'a AnnoJSON, idx: &str) -> PResult<&'a Vec<AnnoJSON>> {
+    if let JSON::Object(ref m) = doc.v {
+        match m.get(idx) {
+            Some(&AnnoJSON { v: JSON::Array(ref a), .. }) => Ok(a),
+            Some(&AnnoJSON { line, col, .. }) => {
                 eprintln!("Expected array at line {} column {}",
                           line, col);
                 failure()
@@ -29,12 +28,11 @@ fn expect_array<'a>(doc: &'a Yaml, idx: &str) -> PResult<&'a Vec<Yaml>> {
     }
 }
 
-fn expect_string<'a>(doc: &'a Yaml, idx: &str) -> PResult<&'a str> {
-    if let YVal::Hash(ref h) = doc.val {
-        let k = Yaml { line: 0, col: 0, val: YVal::String(String::from(idx)) };
-        match h.get(&k) {
-            Some(&Yaml { val: YVal::String(ref s), .. }) => Ok(s),
-            Some(&Yaml { line, col, .. }) => {
+fn expect_string<'a>(doc: &'a AnnoJSON, idx: &str) -> PResult<&'a str> {
+    if let JSON::Object(ref m) = doc.v {
+        match m.get(idx) {
+            Some(&AnnoJSON { v: JSON::String(ref s), .. }) => Ok(s),
+            Some(&AnnoJSON { line, col, .. }) => {
                 eprintln!("Expected string at line {} column {}",
                           line, col);
                 failure()
@@ -52,12 +50,11 @@ fn expect_string<'a>(doc: &'a Yaml, idx: &str) -> PResult<&'a str> {
     }
 }
 
-fn expect_integer(doc: &Yaml, idx: &str) -> PResult<(i64, usize, usize)> {
-    if let YVal::Hash(ref h) = doc.val {
-        let k = Yaml { line: 0, col: 0, val: YVal::String(String::from(idx)) };
-        match h.get(&k) {
-            Some(&Yaml { line, col, val: YVal::Integer(v) }) => Ok((v, line, col)),
-            Some(&Yaml { line, col, .. }) => {
+fn expect_integer(doc: &AnnoJSON, idx: &str) -> PResult<(i64, usize, usize)> {
+    if let JSON::Object(ref m) = doc.v {
+        match m.get(idx) {
+            Some(&AnnoJSON { line, col, v: JSON::Integer(n) }) => Ok((n, line, col)),
+            Some(&AnnoJSON { line, col, .. }) => {
                 eprintln!("Expected integer at line {} column {}",
                           line, col);
                 failure()
@@ -75,12 +72,11 @@ fn expect_integer(doc: &Yaml, idx: &str) -> PResult<(i64, usize, usize)> {
     }
 }
 
-fn optional_integer(doc: &Yaml, idx: &str) -> PResult<Option<(i64, usize, usize)>> {
-    if let YVal::Hash(ref h) = doc.val {
-        let k = Yaml { line: 0, col: 0, val: YVal::String(String::from(idx)) };
-        match h.get(&k) {
-            Some(&Yaml { line, col, val: YVal::Integer(v) }) => Ok(Some((v, line, col))),
-            Some(&Yaml { line, col, .. }) => {
+fn optional_integer(doc: &AnnoJSON, idx: &str) -> PResult<Option<(i64, usize, usize)>> {
+    if let JSON::Object(ref m) = doc.v {
+        match m.get(idx) {
+            Some(&AnnoJSON { line, col, v: JSON::Integer(n) }) => Ok(Some((n, line, col))),
+            Some(&AnnoJSON { line, col, .. }) => {
                 eprintln!("Expected integer at line {} column {}",
                           line, col);
                 failure()
@@ -94,7 +90,7 @@ fn optional_integer(doc: &Yaml, idx: &str) -> PResult<Option<(i64, usize, usize)
     }
 }
 
-fn set_attributes<T>(node: &mut virtfs::Node<T>, entry: &Yaml) -> PResult<()> {
+fn set_attributes<T>(node: &mut virtfs::Node<T>, entry: &AnnoJSON) -> PResult<()> {
     if let Some((v, line, col)) = optional_integer(entry, "owner")? {
         if v < 0 || v > i64::from(<u32>::max_value()) {
             eprintln!("uid out of range at line {} column {}",
@@ -125,7 +121,7 @@ fn set_attributes<T>(node: &mut virtfs::Node<T>, entry: &Yaml) -> PResult<()> {
     Ok(())
 }
 
-fn mkdir<T>(fs: &mut VirtFS<T>, entry: &Yaml) -> PResult<()> {
+fn mkdir<T>(fs: &mut VirtFS<T>, entry: &AnnoJSON) -> PResult<()> {
     let dest = expect_string(entry, "dest")?;
     let n = match fs.mkdir(dest.as_bytes()) {
         Ok(n) => n,
@@ -139,7 +135,7 @@ fn mkdir<T>(fs: &mut VirtFS<T>, entry: &Yaml) -> PResult<()> {
     Ok(())
 }
 
-fn symlink<T>(fs: &mut VirtFS<T>, entry: &Yaml) -> PResult<()> {
+fn symlink<T>(fs: &mut VirtFS<T>, entry: &AnnoJSON) -> PResult<()> {
     let dest = expect_string(entry, "dest")?;
     let tgt = expect_string(entry, "target")?;
     let n = match fs.symlink(dest.as_bytes(), tgt.as_bytes()) {
@@ -159,7 +155,7 @@ enum NodeType {
     Char,
 }
 
-fn mknod<T>(fs: &mut VirtFS<T>, entry: &Yaml) -> PResult<()> {
+fn mknod<T>(fs: &mut VirtFS<T>, entry: &AnnoJSON) -> PResult<()> {
     let dest = expect_string(entry, "dest")?;
     let typ = match expect_string(entry, "type")? {
         "b" | "block" | "blockdev" => NodeType::Block,
@@ -211,7 +207,7 @@ fn mknod<T>(fs: &mut VirtFS<T>, entry: &Yaml) -> PResult<()> {
     Ok(())
 }
 
-pub fn parsefile<P: AsRef<Path>>(path: P) -> io::Result<Vec<Yaml>> {
+pub fn parsefile<P: AsRef<Path>>(path: P) -> io::Result<AnnoJSON> {
     let data = std::fs::read_to_string(path)?;
     match super::yaml::load_from_str(&data) {
         Ok(r) => Ok(r),
@@ -222,11 +218,11 @@ pub fn parsefile<P: AsRef<Path>>(path: P) -> io::Result<Vec<Yaml>> {
     }
 }
 
-pub fn add<T>(fs: &mut VirtFS<T>, doc: &Yaml) -> PResult<()> {
+pub fn add<T>(fs: &mut VirtFS<T>, doc: &AnnoJSON) -> PResult<()> {
     let plan = expect_array(doc, "plan")?;
 
     for v in plan.iter() {
-        //if let YVal::Hash(_) = v.val {
+        //if let YVal::Hash(_) = v.v {
 
         let action = expect_string(v, "do")?;
         match action {

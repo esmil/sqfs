@@ -14,7 +14,6 @@ lzma-sys = "*"
 rust-lzo = "*"
 lz4-sys = "*"
 yaml-rust = "*"
-linked-hash-map = "*"
 virtfs = { path = "../virtfs" }
 
 [lib]

@@ -6,18 +6,16 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 
-extern crate time;
 use time::Timespec;
 
-extern crate clap;
 use clap::{App, AppSettings, Arg, ArgMatches, SubCommand};
 
-extern crate squashfs;
 use virtfs::VirtFS;
+
 use squashfs::unsquash;
 use squashfs::squash;
 
-extern crate yaml_rust;
+mod annojson;
 mod yaml;
 mod plan;
 
@@ -338,14 +336,9 @@ fn plan(m: &ArgMatches) -> PResult<()> {
             return failure();
         }
     };
-    if res.is_empty() {
-        eprintln!("No YAML document found in '{}'",
-                  Path::new(path).display());
-        return failure();
-    }
 
     let mut fs = VirtFS::<FileData>::new();
-    plan::add(&mut fs, &res[0])?;
+    plan::add(&mut fs, &res)?;
 
     /*
     fs.newfile(b"/file", FileData::Static(b"xyz\n"))?;

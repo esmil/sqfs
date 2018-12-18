@@ -11,9 +11,11 @@ vars:
   sshd:
     PasswordAuthentication: no
 plan:
-- do: mkdir
+- name: Create /dev
+  do: mkdir
   dest: '/dev'
-- do: mknod
+- name: Create /dev/loop0
+  do: mknod
   dest: '/dev/loop0'
   type: b
   owner: 0
