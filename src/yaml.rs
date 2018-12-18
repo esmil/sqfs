@@ -4,7 +4,7 @@ use yaml_rust::scanner::{Marker, ScanError, TScalarStyle, TokenType};
 use std::collections::BTreeMap;
 use std::f64;
 use std::i64;
-use std::ops::Index;
+//use std::ops::Index;
 
 pub type Array = Vec<Yaml>;
 pub type Hash = LinkedHashMap<Yaml, Yaml>;
@@ -28,10 +28,6 @@ pub enum YVal {
     Hash(self::Hash),
     /// YAML null, e.g. `null` or `~`.
     Null,
-    /// Accessing a nonexistent node via the Index trait returns `BadValue`. This
-    /// simplifies error handling in the calling code. Invalid type conversion also
-    /// returns `BadValue`.
-    BadValue,
 }
 
 #[derive(Clone, Debug)]
@@ -187,14 +183,6 @@ impl Yaml {
     }
 
     #[allow(dead_code)]
-    pub fn is_badvalue(&self) -> bool {
-        match self.val {
-            YVal::BadValue => true,
-            _ => false,
-        }
-    }
-
-    #[allow(dead_code)]
     pub fn is_array(&self) -> bool {
         match self.val {
             YVal::Array(_) => true,
@@ -219,8 +207,7 @@ impl Yaml {
     }
 }
 
-static BAD_VALUE: Yaml = Yaml { line: 0, col: 0, val: YVal::BadValue };
-
+/*
 impl<'a> Index<&'a str> for Yaml {
     type Output = Yaml;
 
@@ -251,6 +238,7 @@ impl Index<usize> for Yaml {
         }
     }
 }
+*/
 
 impl IntoIterator for Yaml {
     type Item = Yaml;

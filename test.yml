@@ -11,6 +11,24 @@ vars:
   sshd:
     PasswordAuthentication: no
 plan:
+- do: mkdir
+  dest: '/dev'
+- do: mknod
+  dest: '/dev/loop0'
+  type: b
+  owner: 0
+  group: 0
+  mode: 0660
+  major: 7
+  minor: 0
+- do: mknod
+  dest: '/dev/null'
+  type: c
+  owner: 0
+  group: 0
+  mode: 0666
+  major: 3
+  minor: 1
 - do: symlink
   dest: 'bin'
   target: 'usr/bin'

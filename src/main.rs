@@ -21,6 +21,12 @@ extern crate yaml_rust;
 mod yaml;
 mod plan;
 
+type PResult<T> = Result<T, i32>;
+
+fn failure<T>() -> PResult<T> {
+    Err(1)
+}
+
 struct FileBlockReader(fs::File);
 
 impl squashfs::ReadBlock for FileBlockReader {
@@ -80,28 +86,40 @@ fn to_str(buf: &[u8]) -> &str {
     std::str::from_utf8(buf).unwrap_or("<non-utf8>")
 }
 
-fn fail<T>() -> T {
-    ::std::process::exit(1)
-}
-
-fn get_input<'a>(m: &'a ArgMatches) -> Option<(&'a OsStr, u64)> {
+fn get_input<'a>(m: &'a ArgMatches) -> PResult<(&'a OsStr, unsquash::SquashFS)> {
     let offset = if let Some(s) = m.value_of("offset") {
         match u64::from_str_radix(s, 10) {
             Ok(v)  => v,
             Err(e) => {
-                eprintln!("Error parsing offset: {}", e);
-                return None;
+                eprintln!("Error parsing offset '{}': {}", s, e);
+                return failure();
             }
         }
     } else {
         0
     };
-    Some((m.value_of_os("INPUT").unwrap(), offset))
+    let path = m.value_of_os("INPUT").unwrap();
+    let file = match fs::OpenOptions::new().read(true).open(&path) {
+        Ok(file) => file,
+        Err(e) => {
+            eprintln!("Error opening '{}': {}",
+                      Path::new(path).display(), e);
+            return failure();
+        }
+    };
+    let sqfs = match unsquash::SquashFS::new(Box::new(file), offset) {
+        Ok(sqfs) => sqfs,
+        Err(e) => {
+            eprintln!("Error reading '{}': {}",
+                      Path::new(path).display(), e);
+            return failure();
+        }
+    };
+    Ok((path, sqfs))
 }
 
-fn superblock(path: &OsStr, offset: u64) -> io::Result<()> {
-    let file = fs::File::open(path)?;
-    let sqfs = unsquash::SquashFS::new(Box::new(file), offset)?;
+fn superblock(m: &ArgMatches) -> PResult<()> {
+    let (_, sqfs) = get_input(m)?;
     let sb = &sqfs.sb;
 
     println!("inodes:                {}", sb.inodes);
@@ -144,13 +162,9 @@ fn superblock(path: &OsStr, offset: u64) -> io::Result<()> {
     Ok(())
 }
 
-fn list(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
-    let file = fs::File::open(path)?;
-    let sqfs = unsquash::SquashFS::new(Box::new(file), offset)?;
+fn list_show(sqfs: &unsquash::SquashFS, prefix: &[u8], recursive: bool) -> io::Result<()> {
     let mut dec = sqfs.decompressor()?;
-    let recursive = m.is_present("recursive");
     let mut first = true;
-    let prefix = m.value_of_os("PATH").map(|p| p.as_bytes()).unwrap_or(b"");
     let ids = dec.ids()?;
     let mut entries = Vec::new();
     let mut path = String::new();
@@ -215,23 +229,48 @@ fn list(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
     Ok(())
 }
 
-fn contents(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
-    let file = fs::File::open(path)?;
-    let sqfs = unsquash::SquashFS::new(Box::new(file), offset)?;
-    let mut dec = sqfs.decompressor()?;
-    let path = m.value_of_os("PATH").unwrap().as_bytes();
-    let node = dec.lookup(path)?;
+fn list(m: &ArgMatches) -> PResult<()> {
+    let (path, sqfs) = get_input(m)?;
+    let prefix = m.value_of_os("PATH").map(|p| p.as_bytes()).unwrap_or(b"");
+    let recursive = m.is_present("recursive");
 
-    dec.write(&node, &mut io::stdout())?;
-
+    if let Err(e) = list_show(&sqfs, prefix, recursive) {
+        eprintln!("Error reading '{}': {}",
+                  Path::new(path).display(), e);
+        return failure()
+    }
     Ok(())
 }
 
-fn extract(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
-    let file = fs::File::open(path)?;
-    let sqfs = unsquash::SquashFS::new(Box::new(file), offset)?;
+fn contents(m: &ArgMatches) -> PResult<()> {
+    let (input, sqfs) = get_input(m)?;
+    let path = m.value_of_os("PATH").unwrap().as_bytes();
+    let mut dec = match sqfs.decompressor() {
+        Ok(dec) => dec,
+        Err(e) => {
+            eprintln!("Error reading '{}': {}",
+                      Path::new(input).display(), e);
+            return failure();
+        }
+    };
+    let node = match dec.lookup(path) {
+        Ok(node) => node,
+        Err(e) => {
+            eprintln!("Error looking up '{}' in '{}': {}",
+                      to_str(path), Path::new(input).display(), e);
+            return failure();
+        }
+    };
+    if let Err(e) = dec.write(&node, &mut io::stdout()) {
+            eprintln!("Error reading '{}' from '{}': {}",
+                      to_str(path), Path::new(input).display(), e);
+            return failure();
+    }
+    Ok(())
+}
+
+fn extract_all(sqfs: &unsquash::SquashFS, prefix: &[u8]) -> io::Result<()> {
     let mut dec = sqfs.decompressor()?;
-    let prefix = m.value_of_os("PATH").map(|p| p.as_bytes()).unwrap_or(b"");
     //let ids = dec.ids()?;
     let mut entries = Vec::new();
     let mut path = PathBuf::from("squashfs-root");
@@ -277,18 +316,38 @@ fn extract(path: &OsStr, offset: u64, m: &ArgMatches) -> io::Result<()> {
     Ok(())
 }
 
-fn plan(path: &OsStr, _m: &ArgMatches) -> io::Result<()> {
-    let res = plan::parsefile(path)?;
+fn extract(m: &ArgMatches) -> PResult<()> {
+    let (path, sqfs) = get_input(m)?;
+    let prefix = m.value_of_os("PATH").map(|p| p.as_bytes()).unwrap_or(b"");
+
+    if let Err(e) = extract_all(&sqfs, prefix) {
+        eprintln!("Error extracting from '{}': {}",
+                  Path::new(path).display(), e);
+        return failure();
+    }
+    Ok(())
+}
+
+fn plan(m: &ArgMatches) -> PResult<()> {
+    let path = m.value_of_os("PLAN").unwrap();
+    let res = match plan::parsefile(path) {
+        Ok(res) => res,
+        Err(e) => {
+            eprintln!("Error parsing '{}': {}",
+                      Path::new(path).display(), e);
+            return failure();
+        }
+    };
     if res.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "no YAML document found",
-        ));
+        eprintln!("No YAML document found in '{}'",
+                  Path::new(path).display());
+        return failure();
     }
 
     let mut fs = VirtFS::<FileData>::new();
     plan::add(&mut fs, &res[0])?;
 
+    /*
     fs.newfile(b"/file", FileData::Static(b"xyz\n"))?;
     fs.newfile(b"/Makefile", FileData::Path(PathBuf::from("Makefile")))?;
     fs.hardlink(b"/boot/Makefile", b"/Makefile")?;
@@ -296,15 +355,30 @@ fn plan(path: &OsStr, _m: &ArgMatches) -> io::Result<()> {
     fs.blockdev(b"/dev/loop0", 7 << 8 | 0)?.chmod(0o660);
     fs.chardev(b"/dev/null", 1 << 8 | 3)?.chmod(0o666);
     fs.socket(b"/dev/log")?.chmod(0o666);
+    */
 
     print!("{}", fs);
 
-    let mut file = fs::OpenOptions::new()
+    let output = "test.sqfs";
+
+    let mut file = match fs::OpenOptions::new()
         .write(true)
         .create(true)
-        .open("test.sqfs")?;
+        .open(output) {
+            Ok(file) => file,
+            Err(e) => {
+                eprintln!("Error creating '{}': {}",
+                          output, e);
+                return failure();
+            }
+        };
 
-    squash::write(&fs, &mut file, 0)
+    if let Err(e) = squash::write(&fs, &mut file, 0) {
+        eprintln!("Error writing filesystem to '{}': {}",
+                  output, e);
+        return failure();
+    }
+    Ok(())
 }
 
 fn parse_args<'a>() -> ArgMatches<'a> {
@@ -363,50 +437,18 @@ fn parse_args<'a>() -> ArgMatches<'a> {
 }
 
 fn main() {
-    match parse_args().subcommand() {
-        ("superblock", Some(m)) => {
-            let (path, offset) = get_input(m).unwrap_or_else(fail);
-
-            if let Err(e) = superblock(path, offset) {
-                eprintln!("Error reading '{}': {}", Path::new(path).display(), e);
-                fail::<()>();
-            }
-        }
-        ("list", Some(m)) => {
-            let (path, offset) = get_input(m).unwrap_or_else(fail);
-
-            if let Err(e) = list(path, offset, m) {
-                eprintln!("Error reading '{}': {}", Path::new(path).display(), e);
-                fail::<()>();
-            }
-        }
-        ("contents", Some(m)) => {
-            let (path, offset) = get_input(m).unwrap_or_else(fail);
-
-            if let Err(e) = contents(path, offset, m) {
-                eprintln!("Error reading '{}': {}", Path::new(path).display(), e);
-                fail::<()>();
-            }
-        }
-        ("extract", Some(m)) => {
-            let (path, offset) = get_input(m).unwrap_or_else(fail);
-
-            if let Err(e) = extract(path, offset, m) {
-                eprintln!("Error reading '{}': {}", Path::new(path).display(), e);
-                fail::<()>();
-            }
-        }
-        ("plan", Some(m)) => {
-            let path = m.value_of_os("PLAN").unwrap();
-
-            if let Err(e) = plan(path, m) {
-                eprintln!("Error enacting '{}': {}", Path::new(path).display(), e);
-                fail::<()>();
-            }
-        }
+    let ret = match parse_args().subcommand() {
+        ("superblock", Some(m)) => superblock(m),
+        ("list",       Some(m)) => list(m),
+        ("contents",   Some(m)) => contents(m),
+        ("extract",    Some(m)) => extract(m),
+        ("plan",       Some(m)) => plan(m),
         _ => {
-            println!("What to do..");
-            fail::<()>();
+            eprintln!("What to do..");
+            failure()
         }
+    };
+    if let Err(v) = ret {
+        ::std::process::exit(v);
     }
 }
