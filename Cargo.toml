@@ -7,17 +7,9 @@ edition = "2018"
 [dependencies]
 time = "*"
 clap = "*"
-byteorder = "*"
-libc = "*"
-libz-sys = "*"
-lzma-sys = "*"
-rust-lzo = "*"
-lz4-sys = "*"
 yaml-rust = "*"
 virtfs = { path = "../virtfs" }
-
-[lib]
-name = "squashfs"
+squashfs = { path = "../squashfs" }
 
 [[bin]]
 name = "sqfs"

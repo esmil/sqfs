@@ -84,11 +84,11 @@ impl Loader {
                 }
             }
             Some(StackEntry::Key(key)) => {
-                let h = match self.stack.last_mut() {
+                let m = match self.stack.last_mut() {
                     Some(StackEntry::Map(_, _, ref mut m, _)) => m,
                     _ => unreachable!(),
                 };
-                h.insert(key, node);
+                m.insert(key, node);
             }
             None => {
                 self.result = Ok(node);
@@ -150,8 +150,7 @@ impl MarkedEventReceiver for Loader {
                             _ => return self.error(m, "unknown tag suffix"),
                         }
                     } else {
-                        JSON::String(v)
-                        //return self.error(m, "unknown tag handle");
+                        return self.error(m, "unknown tag handle");
                     }
                 } else {
                     // Datatype is not specified, or unrecognized

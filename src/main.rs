@@ -11,7 +11,6 @@ use time::Timespec;
 use clap::{App, AppSettings, Arg, ArgMatches, SubCommand};
 
 use virtfs::VirtFS;
-
 use squashfs::unsquash;
 use squashfs::squash;
 

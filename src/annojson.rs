@@ -23,7 +23,7 @@ pub struct AnnoJSON {
 
 macro_rules! define_as (
     ($name:ident, $t:ty, $e:ident) => (
-        #[allow(dead_code)]
+        #[allow(unused)]
         pub fn $name(&self) -> Option<$t> {
             match self.v {
                 JSON::$e(v) => Some(v),
@@ -35,7 +35,7 @@ macro_rules! define_as (
 
 macro_rules! define_as_ref (
     ($name:ident, $t:ty, $e:ident) => (
-        #[allow(dead_code)]
+        #[allow(unused)]
         pub fn $name(&self) -> Option<$t> {
             match self.v {
                 JSON::$e(ref v) => Some(v),
@@ -47,7 +47,7 @@ macro_rules! define_as_ref (
 
 macro_rules! define_into (
     ($name:ident, $t:ty, $e:ident) => (
-        #[allow(dead_code)]
+        #[allow(unused)]
         pub fn $name(self) -> Option<$t> {
             match self.v {
                 JSON::$e(v) => Some(v),
@@ -73,7 +73,7 @@ impl AnnoJSON {
     define_into!(into_vec, Array, Array);
     define_into!(into_map, Map, Object);
 
-    #[allow(dead_code)]
+    #[allow(unused)]
     pub fn is_null(&self) -> bool {
         match self.v {
             JSON::Null => true,
@@ -81,7 +81,7 @@ impl AnnoJSON {
         }
     }
 
-    #[allow(dead_code)]
+    #[allow(unused)]
     pub fn is_array(&self) -> bool {
         match self.v {
             JSON::Array(_) => true,
@@ -89,7 +89,7 @@ impl AnnoJSON {
         }
     }
 
-    #[allow(dead_code)]
+    #[allow(unused)]
     pub fn is_object(&self) -> bool {
         match self.v {
             JSON::Object(_) => true,
