@@ -96,6 +96,15 @@ impl AnnoJSON {
             _ => false,
         }
     }
+
+    pub fn expect_object<'a, 'b>(&'a self) -> ExpectResult<'b, ExpectMap<'a>> {
+        match *self {
+            AnnoJSON { line, col, v: JSON::Object(ref m) } =>
+                Ok(ExpectMap { line, col, m }),
+            AnnoJSON { line, col, .. } =>
+                Err(ExpectError { line, col, typ: ExpectErrorType::Object }),
+        }
+    }
 }
 
 static NULL: AnnoJSON = AnnoJSON { line: 0, col: 0, v: JSON::Null };
@@ -130,3 +139,124 @@ impl IntoIterator for AnnoJSON {
         self.into_vec().unwrap_or_else(Vec::new).into_iter()
     }
 }
+
+enum ExpectErrorType<'a> {
+    Key(&'a str),
+    IntegerRange(i64, i64),
+    String,
+    Array,
+    Object,
+}
+
+pub struct ExpectError<'a> {
+    line: usize,
+    col: usize,
+    typ: ExpectErrorType<'a>
+}
+
+impl<'a> std::fmt::Display for ExpectError<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self.typ {
+            ExpectErrorType::Key(k) =>
+                write!(f, "expected key '{}' at line {} column {}",
+                       k, self.line, self.col),
+            ExpectErrorType::IntegerRange(min, max) =>
+                write!(f, "expected integer between {} and {} at line {} column {}",
+                       min, max, self.line, self.col),
+            ExpectErrorType::String =>
+                write!(f, "expected string at line {} column {}",
+                       self.line, self.col),
+            ExpectErrorType::Array =>
+                write!(f, "expected array at line {} column {}",
+                       self.line, self.col),
+            ExpectErrorType::Object =>
+                write!(f, "expected object at line {} column {}",
+                       self.line, self.col),
+        }
+    }
+}
+
+pub type ExpectResult<'a, T> = Result<T, ExpectError<'a>>;
+
+pub struct ExpectMap<'a> {
+    pub line: usize,
+    pub col: usize,
+    pub m: &'a Map,
+}
+
+impl<'a> ExpectMap<'a> {
+    pub fn int_range<'b>(&self, idx: &'b str, min: i64, max: i64) -> ExpectResult<'b, i64> {
+        match self.m.get(idx) {
+            Some(&AnnoJSON { v: JSON::Integer(n), .. })
+                if n >= min && n <= max => Ok(n),
+            Some(&AnnoJSON { line, col, .. }) =>
+                Err(ExpectError {
+                    line,
+                    col,
+                    typ: ExpectErrorType::IntegerRange(min, max)
+                }),
+            None =>
+                Err(ExpectError {
+                    line: self.line,
+                    col: self.col,
+                    typ: ExpectErrorType::Key(idx)
+                }),
+        }
+    }
+
+    pub fn u32<'b>(&self, idx: &'b str) -> ExpectResult<'b, u32> {
+        let n = self.int_range(idx, 0, i64::from(u32::max_value()))?;
+        Ok(n as u32)
+    }
+
+    pub fn str<'b>(&self, idx: &'b str) -> ExpectResult<'b, &'a str> {
+        match self.m.get(idx) {
+            Some(&AnnoJSON { v: JSON::String(ref s), .. }) => Ok(s),
+            Some(&AnnoJSON { line, col, .. }) =>
+                Err(ExpectError {
+                    line,
+                    col,
+                    typ: ExpectErrorType::String
+                }),
+            None =>
+                Err(ExpectError {
+                    line: self.line,
+                    col: self.col,
+                    typ: ExpectErrorType::Key(idx)
+                }),
+        }
+    }
+
+    pub fn vec<'b>(&self, idx: &'b str) -> ExpectResult<'b, &'a Vec<AnnoJSON>> {
+        match self.m.get(idx) {
+            Some(&AnnoJSON { v: JSON::Array(ref v), .. }) => Ok(v),
+            Some(&AnnoJSON { line, col, .. }) =>
+                Err(ExpectError {
+                    line,
+                    col,
+                    typ: ExpectErrorType::Array
+                }),
+            None =>
+                Err(ExpectError {
+                    line: self.line,
+                    col: self.col,
+                    typ: ExpectErrorType::Key(idx)
+                }),
+        }
+    }
+
+    pub fn maybe_int_range<'b>(&self, idx: &'b str, min: i64, max: i64) -> ExpectResult<'b, Option<i64>> {
+        match self.m.get(idx) {
+            Some(&AnnoJSON { v: JSON::Integer(n), .. })
+                if n >= min && n <= max => Ok(Some(n)),
+            Some(&AnnoJSON { line, col, .. }) =>
+                Err(ExpectError {
+                    line,
+                    col,
+                    typ: ExpectErrorType::IntegerRange(min, max)
+                }),
+            None => Ok(None),
+        }
+    }
+}
+

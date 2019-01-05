@@ -1,153 +1,57 @@
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::os::unix::ffi::OsStrExt;
 
-use super::{PResult, failure};
-use super::annojson::{AnnoJSON, JSON};
+use super::{ProgResult, failure, VirtFS};
+use super::annojson::{AnnoJSON, ExpectMap, ExpectError};
 
-use virtfs::VirtFS;
-
-fn expect_array<'a>(doc: &'a AnnoJSON, idx: &str) -> PResult<&'a Vec<AnnoJSON>> {
-    if let JSON::Object(ref m) = doc.v {
-        match m.get(idx) {
-            Some(&AnnoJSON { v: JSON::Array(ref a), .. }) => Ok(a),
-            Some(&AnnoJSON { line, col, .. }) => {
-                eprintln!("Expected array at line {} column {}",
-                          line, col);
-                failure()
-            }
-            None => {
-                eprintln!("Expected key '{}' in hash at line {} column {}",
-                          idx, doc.line, doc.col);
-                failure()
-            }
-        }
-    } else {
-        eprintln!("Expected hash at line {} column {}",
-                  doc.line, doc.col);
-        failure()
+impl<'a> std::convert::From<ExpectError<'a>> for super::ProgError {
+    fn from(e: ExpectError<'a>) -> Self {
+        eprintln!("{}", e);
+        super::PROG_FAILURE
     }
 }
 
-fn expect_string<'a>(doc: &'a AnnoJSON, idx: &str) -> PResult<&'a str> {
-    if let JSON::Object(ref m) = doc.v {
-        match m.get(idx) {
-            Some(&AnnoJSON { v: JSON::String(ref s), .. }) => Ok(s),
-            Some(&AnnoJSON { line, col, .. }) => {
-                eprintln!("Expected string at line {} column {}",
-                          line, col);
-                failure()
-            }
-            None => {
-                eprintln!("Expected key '{}' in hash at line {} column {}",
-                          idx, doc.line, doc.col);
-                failure()
-            }
-        }
-    } else {
-        eprintln!("Expected hash at line {} column {}",
-                  doc.line, doc.col);
-        failure()
-    }
-}
-
-fn expect_integer(doc: &AnnoJSON, idx: &str) -> PResult<(i64, usize, usize)> {
-    if let JSON::Object(ref m) = doc.v {
-        match m.get(idx) {
-            Some(&AnnoJSON { line, col, v: JSON::Integer(n) }) => Ok((n, line, col)),
-            Some(&AnnoJSON { line, col, .. }) => {
-                eprintln!("Expected integer at line {} column {}",
-                          line, col);
-                failure()
-            }
-            None => {
-                eprintln!("Expected key '{}' in hash at line {} column {}",
-                          idx, doc.line, doc.col);
-                failure()
-            }
-        }
-    } else {
-        eprintln!("Expected hash at line {} column {}",
-                  doc.line, doc.col);
-        failure()
-    }
-}
-
-fn optional_integer(doc: &AnnoJSON, idx: &str) -> PResult<Option<(i64, usize, usize)>> {
-    if let JSON::Object(ref m) = doc.v {
-        match m.get(idx) {
-            Some(&AnnoJSON { line, col, v: JSON::Integer(n) }) => Ok(Some((n, line, col))),
-            Some(&AnnoJSON { line, col, .. }) => {
-                eprintln!("Expected integer at line {} column {}",
-                          line, col);
-                failure()
-            }
-            None => Ok(None),
-        }
-    } else {
-        eprintln!("Expected hash at line {} column {}",
-                  doc.line, doc.col);
-        failure()
-    }
-}
-
-fn set_attributes<T>(node: &mut virtfs::Node<T>, entry: &AnnoJSON) -> PResult<()> {
-    if let Some((v, line, col)) = optional_integer(entry, "owner")? {
-        if v < 0 || v > i64::from(<u32>::max_value()) {
-            eprintln!("uid out of range at line {} column {}",
-                      line, col);
-            return failure();
-        }
-        node.chown(v as u32);
+fn set_attributes<T>(node: &mut virtfs::Node<T>, m: &ExpectMap) -> ProgResult<()> {
+    if let Some(n) = m.maybe_int_range("owner", 0, i64::from(u32::max_value()))? {
+        node.chown(n as u32);
     }
 
-    if let Some((v, line, col)) = optional_integer(entry, "group")? {
-        if v < 0 || v > i64::from(<u32>::max_value()) {
-            eprintln!("gid out of range at line {} column {}",
-                      line, col);
-            return failure();
-        }
-        node.chgrp(v as u32);
+    if let Some(n) = m.maybe_int_range("group", 0, i64::from(u32::max_value()))? {
+        node.chgrp(n as u32);
     }
 
-    if let Some((v, line, col)) = optional_integer(entry, "mode")? {
-        if v < 0 || v > i64::from(<u16>::max_value()) {
-            eprintln!("invalid mode at line {} column {}",
-                      line, col);
-            return failure();
-        }
-        node.chmod(v as u16);
+    if let Some(n) = m.maybe_int_range("mode", 0, i64::from(u16::max_value()))? {
+        node.chmod(n as u16);
     }
-
     Ok(())
 }
 
-fn mkdir<T>(fs: &mut VirtFS<T>, entry: &AnnoJSON) -> PResult<()> {
-    let dest = expect_string(entry, "dest")?;
+fn mkdir(fs: &mut VirtFS, m: &ExpectMap) -> ProgResult<()> {
+    let dest = m.str("dest")?;
     let n = match fs.mkdir(dest.as_bytes()) {
         Ok(n) => n,
         Err(e) => {
-            eprintln!("Error creating directory '{}': {}",
+            eprintln!("error creating directory '{}': {}",
                       dest, e);
             return failure();
         }
     };
-    set_attributes(n, entry)?;
-    Ok(())
+    set_attributes(n, m)
 }
 
-fn symlink<T>(fs: &mut VirtFS<T>, entry: &AnnoJSON) -> PResult<()> {
-    let dest = expect_string(entry, "dest")?;
-    let tgt = expect_string(entry, "target")?;
+fn symlink(fs: &mut VirtFS, m: &ExpectMap) -> ProgResult<()> {
+    let dest = m.str("dest")?;
+    let tgt = m.str("target")?;
     let n = match fs.symlink(dest.as_bytes(), tgt.as_bytes()) {
         Ok(n) => n,
         Err(e) => {
-            eprintln!("Error creating symlink '{}' -> '{}': {}",
+            eprintln!("error creating symlink '{}' -> '{}': {}",
                       dest, tgt, e);
             return failure();
         }
     };
-    set_attributes(n, entry)?;
-    Ok(())
+    set_attributes(n, m)
 }
 
 enum NodeType {
@@ -155,38 +59,24 @@ enum NodeType {
     Char,
 }
 
-fn mknod<T>(fs: &mut VirtFS<T>, entry: &AnnoJSON) -> PResult<()> {
-    let dest = expect_string(entry, "dest")?;
-    let typ = match expect_string(entry, "type")? {
+fn mknod(fs: &mut VirtFS, m: &ExpectMap) -> ProgResult<()> {
+    let dest = m.str("dest")?;
+    let typ = match m.str("type")? {
         "b" | "block" | "blockdev" => NodeType::Block,
         "c" | "char" | "chardev"   => NodeType::Char,
         _ => {
-            eprintln!("");
+            eprintln!("type must be 'b', 'block', 'c' or 'char'");
             return failure();
         }
     };
-    let (v, line, col) = expect_integer(entry, "major")?;
-    let major = if v < 0 || v >= 256 {
-        eprintln!("major out of range at line {} column {}",
-                  line, col);
-        return failure();
-    } else {
-        v as u32
-    };
-    let (v, line, col) = expect_integer(entry, "minor")?;
-    let minor = if v < 0 || v >= 256 {
-        eprintln!("minor out of range at line {} column {}",
-                  line, col);
-        return failure();
-    } else {
-        v as u32
-    };
+    let major = m.int_range("major", 0, 256)? as u32;
+    let minor = m.int_range("minor", 0, 256)? as u32;
     let n = match typ {
         NodeType::Block => {
             match fs.blockdev(dest.as_bytes(), major << 8 | minor) {
                 Ok(n) => n,
                 Err(e) => {
-                    eprintln!("Error creating block device '{}': {}",
+                    eprintln!("error creating block device '{}': {}",
                               dest, e);
                     return failure();
                 }
@@ -196,15 +86,111 @@ fn mknod<T>(fs: &mut VirtFS<T>, entry: &AnnoJSON) -> PResult<()> {
             match fs.chardev(dest.as_bytes(), major << 8 | minor) {
                 Ok(n) => n,
                 Err(e) => {
-                    eprintln!("Error creating character device '{}': {}",
+                    eprintln!("error creating character device '{}': {}",
                               dest, e);
                     return failure();
                 }
             }
         }
     };
-    set_attributes(n, entry)?;
+    set_attributes(n, m)
+}
+
+fn treewalk(fs: &mut VirtFS, sdir: &Path, sdest: &str) -> io::Result<()> {
+    let mut stack = Vec::new();
+    let mut path = PathBuf::from(sdir);
+    let mut dest = Vec::new();
+
+    dest.extend_from_slice(sdest.as_bytes());
+    while let Some(b'/') = dest.last() {
+        dest.pop();
+    }
+    fs.mkdir(&dest)?;
+    dest.push(b'/');
+
+    stack.push((sdir.read_dir()?, dest.len()));
+    loop {
+        let (next, len) = if let Some((rd, len)) = stack.last_mut() {
+            (rd.next(), *len)
+        } else {
+            break;
+        };
+        if let Some(res) = next {
+            let entry = res?;
+            {
+                let name = entry.file_name();
+                dest.truncate(len);
+                dest.extend_from_slice(name.as_os_str().as_bytes());
+                path.push(name);
+            }
+            let md = entry.metadata()?;
+            let mtime = md.modified()?;
+            let ft = md.file_type();
+            if ft.is_file() {
+                fs.newfile(&dest, path.clone())?.touch(mtime);
+                path.pop();
+            } else if ft.is_symlink() {
+                let target = path.read_link()?;
+                fs.symlink(&dest, target.as_os_str().as_bytes())?.touch(mtime);
+                path.pop();
+            } else if ft.is_dir() {
+                fs.mkdir(&dest)?.touch(mtime);
+                dest.push(b'/');
+                stack.push((path.read_dir()?, dest.len()));
+            } else {
+                eprintln!("unknown file type for '{}'",
+                          path.display());
+                path.pop();
+            }
+        } else {
+            path.pop();
+            stack.pop();
+        }
+    }
     Ok(())
+}
+
+pub fn files(fs: &mut VirtFS, m: &ExpectMap) -> ProgResult<()> {
+    let dest = m.str("dest")?;
+    let path = PathBuf::from(m.str("path")?);
+    let md = match path.symlink_metadata() {
+        Ok(md) => md,
+        Err(e) => {
+            eprintln!("error opening '{}': {}",
+                      path.display(), e);
+            return failure();
+        }
+    };
+
+    if md.is_dir() {
+        return match treewalk(fs, &path, dest) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                eprintln!("error walking '{}': {}",
+                          path.display(), e);
+                failure()
+            }
+        }
+    }
+    let mtime = match md.modified() {
+        Ok(mtime) => mtime,
+        Err(e) => {
+            eprintln!("error reading mtime from '{}': {}",
+                      path.display(), e);
+            return failure();
+        }
+    };
+
+    let n = match fs.newfile(dest.as_bytes(), path) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("error creating file '{}': {}",
+                      dest, e);
+            return failure();
+        }
+    };
+    n.touch(mtime);
+    set_attributes(n, m)
 }
 
 pub fn parsefile<P: AsRef<Path>>(path: P) -> io::Result<AnnoJSON> {
@@ -218,17 +204,18 @@ pub fn parsefile<P: AsRef<Path>>(path: P) -> io::Result<AnnoJSON> {
     }
 }
 
-pub fn add<T>(fs: &mut VirtFS<T>, doc: &AnnoJSON) -> PResult<()> {
-    let plan = expect_array(doc, "plan")?;
+pub fn add(fs: &mut VirtFS, doc: &AnnoJSON) -> ProgResult<()> {
+    let doc = doc.expect_object()?;
 
-    for v in plan.iter() {
-        //if let YVal::Hash(_) = v.v {
+    for v in doc.vec("plan")? {
+        let m = v.expect_object()?;
 
-        let action = expect_string(v, "do")?;
+        let action = m.str("do")?;
         match action {
-            "mkdir"   => mkdir(fs, v)?,
-            "symlink" => symlink(fs, v)?,
-            "mknod"   => mknod(fs, v)?,
+            "mkdir"   => mkdir(fs, &m)?,
+            "symlink" => symlink(fs, &m)?,
+            "mknod"   => mknod(fs, &m)?,
+            "add"     => files(fs, &m)?,
             _ => {
                 eprintln!("Unknown action '{}'", action);
                 return failure();

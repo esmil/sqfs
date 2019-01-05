@@ -8,7 +8,7 @@ edition = "2018"
 time = "*"
 clap = "*"
 yaml-rust = "*"
-virtfs = { path = "../virtfs" }
+virtfs = { git = "https://github.com/esmil/virtfs.git" }
 squashfs = { path = "../squashfs" }
 
 [[bin]]

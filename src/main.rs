@@ -10,7 +10,6 @@ use time::Timespec;
 
 use clap::{App, AppSettings, Arg, ArgMatches, SubCommand};
 
-use virtfs::VirtFS;
 use squashfs::unsquash;
 use squashfs::squash;
 
@@ -18,10 +17,13 @@ mod annojson;
 mod yaml;
 mod plan;
 
-type PResult<T> = Result<T, i32>;
+type ProgError = i32;
+type ProgResult<T> = Result<T, ProgError>;
 
-fn failure<T>() -> PResult<T> {
-    Err(1)
+const PROG_FAILURE: ProgError = 1;
+
+fn failure<T>() -> ProgResult<T> {
+    Err(PROG_FAILURE)
 }
 
 struct FileBlockReader(fs::File);
@@ -57,9 +59,15 @@ impl<'a> squashfs::ReadBlock for MemBlockReader<'a> {
     }
 }
 
-enum FileData {
+pub enum FileData {
     Path(PathBuf),
     Static(&'static [u8]),
+}
+
+impl From<PathBuf> for FileData {
+    fn from(p: PathBuf) -> Self {
+        FileData::Path(p)
+    }
 }
 
 impl squashfs::FileData for FileData {
@@ -79,11 +87,13 @@ impl squashfs::FileData for FileData {
     }
 }
 
+type VirtFS = virtfs::VirtFS<FileData>;
+
 fn to_str(buf: &[u8]) -> &str {
     std::str::from_utf8(buf).unwrap_or("<non-utf8>")
 }
 
-fn get_input<'a>(m: &'a ArgMatches) -> PResult<(&'a OsStr, unsquash::SquashFS)> {
+fn get_input<'a>(m: &'a ArgMatches) -> ProgResult<(&'a OsStr, unsquash::SquashFS)> {
     let offset = if let Some(s) = m.value_of("offset") {
         match u64::from_str_radix(s, 10) {
             Ok(v)  => v,
@@ -115,7 +125,7 @@ fn get_input<'a>(m: &'a ArgMatches) -> PResult<(&'a OsStr, unsquash::SquashFS)> 
     Ok((path, sqfs))
 }
 
-fn superblock(m: &ArgMatches) -> PResult<()> {
+fn superblock(m: &ArgMatches) -> ProgResult<()> {
     let (_, sqfs) = get_input(m)?;
     let sb = &sqfs.sb;
 
@@ -226,7 +236,7 @@ fn list_show(sqfs: &unsquash::SquashFS, prefix: &[u8], recursive: bool) -> io::R
     Ok(())
 }
 
-fn list(m: &ArgMatches) -> PResult<()> {
+fn list(m: &ArgMatches) -> ProgResult<()> {
     let (path, sqfs) = get_input(m)?;
     let prefix = m.value_of_os("PATH").map(|p| p.as_bytes()).unwrap_or(b"");
     let recursive = m.is_present("recursive");
@@ -239,7 +249,7 @@ fn list(m: &ArgMatches) -> PResult<()> {
     Ok(())
 }
 
-fn contents(m: &ArgMatches) -> PResult<()> {
+fn contents(m: &ArgMatches) -> ProgResult<()> {
     let (input, sqfs) = get_input(m)?;
     let path = m.value_of_os("PATH").unwrap().as_bytes();
     let mut dec = match sqfs.decompressor() {
@@ -313,7 +323,7 @@ fn extract_all(sqfs: &unsquash::SquashFS, prefix: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-fn extract(m: &ArgMatches) -> PResult<()> {
+fn extract(m: &ArgMatches) -> ProgResult<()> {
     let (path, sqfs) = get_input(m)?;
     let prefix = m.value_of_os("PATH").map(|p| p.as_bytes()).unwrap_or(b"");
 
@@ -325,7 +335,7 @@ fn extract(m: &ArgMatches) -> PResult<()> {
     Ok(())
 }
 
-fn plan(m: &ArgMatches) -> PResult<()> {
+fn plan(m: &ArgMatches) -> ProgResult<()> {
     let path = m.value_of_os("PLAN").unwrap();
     let res = match plan::parsefile(path) {
         Ok(res) => res,
@@ -336,18 +346,8 @@ fn plan(m: &ArgMatches) -> PResult<()> {
         }
     };
 
-    let mut fs = VirtFS::<FileData>::new();
+    let mut fs = VirtFS::new();
     plan::add(&mut fs, &res)?;
-
-    /*
-    fs.newfile(b"/file", FileData::Static(b"xyz\n"))?;
-    fs.newfile(b"/Makefile", FileData::Path(PathBuf::from("Makefile")))?;
-    fs.hardlink(b"/boot/Makefile", b"/Makefile")?;
-    fs.mkdir(b"/dev")?;
-    fs.blockdev(b"/dev/loop0", 7 << 8 | 0)?.chmod(0o660);
-    fs.chardev(b"/dev/null", 1 << 8 | 3)?.chmod(0o666);
-    fs.socket(b"/dev/log")?.chmod(0o666);
-    */
 
     print!("{}", fs);
 
@@ -365,7 +365,8 @@ fn plan(m: &ArgMatches) -> PResult<()> {
             }
         };
 
-    if let Err(e) = squash::write(&fs, &mut file, 0) {
+    if let Err(e) = squash::SquashOptions::new(squashfs::compression::Compression::lz4())
+            .write(&fs, &mut file, 0) {
         eprintln!("Error writing filesystem to '{}': {}",
                   output, e);
         return failure();

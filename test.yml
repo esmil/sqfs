@@ -66,6 +66,12 @@ plan:
 - do: mkdir
   dest: 'var'
 
+- do: add
+  dest: 'var/target'
+  path: target
+  owner: 1000
+  group: 100
+
 - do: mkdir
   dest: home/esmil
   owner: 1000
