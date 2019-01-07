@@ -16,12 +16,12 @@ endif
 run: target/debug/$(NAME) | build
 	$Q$< plan test.yml
 	$Q$< sb test.sqfs
-	$Q$< ls -r test.sqfs
+	@#$Q$< ls -r test.sqfs
 
 release: target/release/$(NAME)
 	$Q$< plan test.yml
 	$Q$< sb test.sqfs
-	$Q$< ls -r test.sqfs
+	@#$Q$< ls -r test.sqfs
 
 static: target/x86_64-unknown-linux-musl/release/$(NAME)
 	$E $(STRIP) $@

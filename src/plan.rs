@@ -150,7 +150,7 @@ fn treewalk(fs: &mut VirtFS, sdir: &Path, sdest: &str) -> io::Result<()> {
     Ok(())
 }
 
-pub fn files(fs: &mut VirtFS, m: &ExpectMap) -> ProgResult<()> {
+fn files(fs: &mut VirtFS, m: &ExpectMap) -> ProgResult<()> {
     let dest = m.str("dest")?;
     let path = PathBuf::from(m.str("path")?);
     let md = match path.symlink_metadata() {
@@ -193,18 +193,7 @@ pub fn files(fs: &mut VirtFS, m: &ExpectMap) -> ProgResult<()> {
     set_attributes(n, m)
 }
 
-pub fn parsefile<P: AsRef<Path>>(path: P) -> io::Result<AnnoJSON> {
-    let data = std::fs::read_to_string(path)?;
-    match super::yaml::load_from_str(&data) {
-        Ok(r) => Ok(r),
-        Err(e) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{}", e),
-        ))
-    }
-}
-
-pub fn add(fs: &mut VirtFS, doc: &AnnoJSON) -> ProgResult<()> {
+pub(crate) fn add(fs: &mut VirtFS, doc: &AnnoJSON) -> ProgResult<()> {
     let doc = doc.expect_object()?;
 
     for v in doc.vec("plan")? {

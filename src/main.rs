@@ -1,10 +1,9 @@
-use std::{io, fs};
-use std::io::Read;
+use std::fs;
+use std::io::{self, Read};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{PathBuf, Path};
 
 use time::Timespec;
 
@@ -45,23 +44,22 @@ impl squashfs::ReadBlock for FileBlockReader {
     }
 }
 
-struct MemBlockReader<'a> {
-    data: &'a [u8],
-    idx: usize,
-}
+struct MemBlockReader<'a>(&'a [u8]);
 
 impl<'a> squashfs::ReadBlock for MemBlockReader<'a> {
     fn readblock(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let chunk = std::cmp::min(self.data.len() - self.idx, buf.len());
-        buf[..chunk].copy_from_slice(&self.data[self.idx..(self.idx + chunk)]);
-        self.idx += chunk;
+        let chunk = std::cmp::min(self.0.len(), buf.len());
+        buf[..chunk].copy_from_slice(&self.0[..chunk]);
+        self.0 = &self.0[chunk..];
         Ok(chunk)
     }
 }
 
-pub enum FileData {
+pub(crate) enum FileData {
     Path(PathBuf),
-    Static(&'static [u8]),
+    //Static(&'static [u8]),
+    //Data(Box<[u8]>),
+    String(String),
 }
 
 impl From<PathBuf> for FileData {
@@ -70,18 +68,29 @@ impl From<PathBuf> for FileData {
     }
 }
 
+impl From<String> for FileData {
+    fn from(s: String) -> Self {
+        FileData::String(s)
+    }
+}
+
 impl squashfs::FileData for FileData {
-    fn open(&self) -> io::Result<Box<dyn squashfs::ReadBlock>> {
+    fn open<'a>(&'a self) -> io::Result<Box<dyn squashfs::ReadBlock + 'a>> {
         match *self {
             FileData::Path(ref p) => {
-                println!("Opening '{}'", p.to_str().unwrap_or("<non-utf8>"));
-                Ok(Box::new(FileBlockReader(std::fs::File::open(p)?)))
+                println!("Opening '{}'", p.display());
+                Ok(Box::new(FileBlockReader(fs::File::open(p)?)))
             }
+            /*
             FileData::Static(buf) => {
-                Ok(Box::new(MemBlockReader {
-                    data: buf,
-                    idx: 0,
-                }))
+                Ok(Box::new(MemBlockReader(buf)))
+            }
+            FileData::Data(ref buf) => {
+                Ok(Box::new(MemBlockReader(buf)))
+            }
+            */
+            FileData::String(ref s) => {
+                Ok(Box::new(MemBlockReader(s.as_bytes())))
             }
         }
     }
@@ -291,7 +300,7 @@ fn extract_all(sqfs: &unsquash::SquashFS, prefix: &[u8]) -> io::Result<()> {
             println!("{}", path.display());
             match node.typ {
                 unsquash::INodeType::Dir { .. } => {
-                    std::fs::create_dir(&path)?;
+                    fs::create_dir(&path)?;
                     for p in dec.readdir(&node)? {
                         entries.push(p?)
                     }
@@ -337,38 +346,65 @@ fn extract(m: &ArgMatches) -> ProgResult<()> {
 
 fn plan(m: &ArgMatches) -> ProgResult<()> {
     let path = m.value_of_os("PLAN").unwrap();
-    let res = match plan::parsefile(path) {
-        Ok(res) => res,
+    let mut plan = match fs::OpenOptions::new().read(true).open(path) {
+        Ok(file) => file,
+        Err(e)   => {
+            eprintln!("Error opening '{}': {}",
+                      Path::new(path).display(), e);
+            return failure();
+        }
+    };
+    let mtime = match plan.metadata().and_then(|md| md.modified()) {
+        Ok(file) => file,
+        Err(e)   => {
+            eprintln!("Error stat'ing '{}': {}",
+                      Path::new(path).display(), e);
+            return failure();
+        }
+    };
+    let mut data = String::new();
+    match plan.read_to_string(&mut data) {
+        Ok(_)  => {}
         Err(e) => {
+            eprintln!("Error reading '{}': {}",
+                      Path::new(path).display(), e);
+            return failure();
+        }
+    };
+    drop(plan);
+    let res = match yaml::load_from_str(&data) {
+        Ok(res) => res,
+        Err(e)  => {
             eprintln!("Error parsing '{}': {}",
                       Path::new(path).display(), e);
             return failure();
         }
     };
+    drop(data);
 
-    let mut fs = VirtFS::new();
+    let mut fs = VirtFS::new_at(mtime);
     plan::add(&mut fs, &res)?;
 
-    print!("{}", fs);
+    //print!("{}", fs);
 
     let output = "test.sqfs";
 
     let mut file = match fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .open(output) {
-            Ok(file) => file,
-            Err(e) => {
-                eprintln!("Error creating '{}': {}",
-                          output, e);
-                return failure();
-            }
-        };
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(output) {
+        Ok(file) => file,
+        Err(e) => {
+            eprintln!("Error creating '{}': {}",
+                      output, e);
+            return failure();
+        }
+    };
 
     if let Err(e) = squash::SquashOptions::new(squashfs::compression::Compression::lz4())
-            .write(&fs, &mut file, 0) {
-        eprintln!("Error writing filesystem to '{}': {}",
-                  output, e);
+            .write(&fs, &mut file) {
+        eprintln!("Error writing filesystem to '{}': {}", output, e);
         return failure();
     }
     Ok(())
