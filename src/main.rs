@@ -123,7 +123,7 @@ fn get_input<'a>(m: &'a ArgMatches) -> ProgResult<(&'a OsStr, unsquash::SquashFS
             return failure();
         }
     };
-    let sqfs = match unsquash::SquashFS::new(Box::new(file), offset) {
+    let sqfs = match unsquash::SquashFS::open(Box::new(file), offset) {
         Ok(sqfs) => sqfs,
         Err(e) => {
             eprintln!("Error reading '{}': {}",
@@ -135,8 +135,34 @@ fn get_input<'a>(m: &'a ArgMatches) -> ProgResult<(&'a OsStr, unsquash::SquashFS
 }
 
 fn superblock(m: &ArgMatches) -> ProgResult<()> {
-    let (_, sqfs) = get_input(m)?;
-    let sb = &sqfs.sb;
+    let offset = if let Some(s) = m.value_of("offset") {
+        match u64::from_str_radix(s, 10) {
+            Ok(v)  => v,
+            Err(e) => {
+                eprintln!("Error parsing offset '{}': {}", s, e);
+                return failure();
+            }
+        }
+    } else {
+        0
+    };
+    let path = m.value_of_os("INPUT").unwrap();
+    let file = match fs::OpenOptions::new().read(true).open(&path) {
+        Ok(file) => file,
+        Err(e) => {
+            eprintln!("Error opening '{}': {}",
+                      Path::new(path).display(), e);
+            return failure();
+        }
+    };
+    let sb = match unsquash::SuperBlock::read(&file, offset) {
+        Ok(sb) => sb,
+        Err(e) => {
+            eprintln!("Error reading '{}': {}",
+                      Path::new(path).display(), e);
+            return failure();
+        }
+    };
 
     println!("inodes:                {}", sb.inodes);
     println!("mkfs_time:             {}",
@@ -175,13 +201,23 @@ fn superblock(m: &ArgMatches) -> ProgResult<()> {
     println!("fragment_table_start:  {}", sb.fragment_table_start);
     println!("lookup_table_start:    {}", sb.lookup_table_start);
 
+    /*
+    let sqfs = match unsquash::SquashFS::open(Box::new(file), offset) {
+        Ok(sqfs) => sqfs,
+        Err(e) => {
+            eprintln!("Error reading '{}': {}",
+                      Path::new(path).display(), e);
+            return failure();
+        }
+    };
+    */
+
     Ok(())
 }
 
 fn list_show(sqfs: &unsquash::SquashFS, prefix: &[u8], recursive: bool) -> io::Result<()> {
     let mut dec = sqfs.decompressor()?;
     let mut first = true;
-    let ids = dec.ids()?;
     let mut entries = Vec::new();
     let mut path = String::new();
     let mut stack = Vec::new();
@@ -200,8 +236,8 @@ fn list_show(sqfs: &unsquash::SquashFS, prefix: &[u8], recursive: bool) -> io::R
         let ino = node.ino();
         let nlink = node.nlink();
         let mode = node.mode();
-        let uid = ids[node.uid_idx()];
-        let gid = ids[node.gid_idx()];
+        let uid = dec.id(node.uid_idx())?;
+        let gid = dec.id(node.gid_idx())?;
         match node.typ {
             unsquash::INodeType::Dir { parent, .. } => {
                 println!("{} {:3} {:2} {:4} {:4} {:4o} {} {}", typc, ino, nlink, uid, gid, mode,
@@ -285,9 +321,38 @@ fn contents(m: &ArgMatches) -> ProgResult<()> {
     Ok(())
 }
 
+fn xattrs(m: &ArgMatches) -> ProgResult<()> {
+    let (input, sqfs) = get_input(m)?;
+    let path = m.value_of_os("PATH").unwrap().as_bytes();
+    let mut dec = match sqfs.decompressor() {
+        Ok(dec) => dec,
+        Err(e) => {
+            eprintln!("Error reading '{}': {}",
+                      Path::new(input).display(), e);
+            return failure();
+        }
+    };
+    let node = match dec.lookup(path) {
+        Ok(node) => node,
+        Err(e) => {
+            eprintln!("Error looking up '{}' in '{}': {}",
+                      to_str(path), Path::new(input).display(), e);
+            return failure();
+        }
+    };
+    match dec.xattrs(&node) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("Error reading xattrs from '{}' in '{}': {}",
+                      to_str(path), Path::new(input).display(), e);
+            return failure();
+        }
+    };
+    Ok(())
+}
+
 fn extract_all(sqfs: &unsquash::SquashFS, prefix: &[u8]) -> io::Result<()> {
     let mut dec = sqfs.decompressor()?;
-    //let ids = dec.ids()?;
     let mut entries = Vec::new();
     let mut path = PathBuf::from("squashfs-root");
     let mut stack = Vec::new();
@@ -450,6 +515,14 @@ fn parse_args<'a>() -> ArgMatches<'a> {
             .arg(Arg::with_name("PATH")
                 .help("path to file")
                 .required(true)))
+        .subcommand(SubCommand::with_name("xattrs")
+            .about("show extended attributes of a file")
+            .visible_alias("xattr")
+            .setting(AppSettings::ColoredHelp)
+            .arg(&offset).arg(&input)
+            .arg(Arg::with_name("PATH")
+                .help("path to file")
+                .required(true)))
         .subcommand(SubCommand::with_name("extract")
             .about("extract all files from squashfs")
             .visible_alias("x")
@@ -470,6 +543,7 @@ fn main() {
         ("superblock", Some(m)) => superblock(m),
         ("list",       Some(m)) => list(m),
         ("contents",   Some(m)) => contents(m),
+        ("xattrs",     Some(m)) => xattrs(m),
         ("extract",    Some(m)) => extract(m),
         ("plan",       Some(m)) => plan(m),
         _ => {
